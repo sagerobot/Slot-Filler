@@ -1,0 +1,612 @@
+-- Headless harness: stubs enough of the WoW API to load Slot Filler under
+-- plain Lua 5.1 and exercise its logic. Run from the repo root:
+--   lua tests/harness.lua
+-- Numbers follow Midnight Season 2 (Champion 1/6 = 292, +10 = 311 Hero 3/6,
+-- vault/Voidcore at +10 = 318 Myth 1/6).
+local ROOT = arg and arg[0] and arg[0]:match("^(.*)[/\\]tests[/\\]") or "."
+local ADDON_DIR = ROOT .. "/SlotFiller/"
+
+local failures = 0
+local function check(cond, msg)
+    if cond then
+        print("  ok   " .. msg)
+    else
+        failures = failures + 1
+        print("  FAIL " .. msg)
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Generic widget stub: any unknown method is a no-op returning nil.
+-------------------------------------------------------------------------------
+local Widget = {}
+Widget.__index = function(t, k)
+    local v = rawget(Widget, k)
+    if v ~= nil then return v end
+    if type(k) == "string" and k:sub(1, 1) == "_" then return nil end
+    local f = function() end
+    rawset(t, k, f)
+    return f
+end
+local function NewWidget(kind, name)
+    local w = setmetatable({ _kind = kind, _name = name, _shown = false, _scripts = {}, _children = {} }, Widget)
+    if name then _G[name] = w end
+    return w
+end
+function Widget:SetScript(ev, fn) self._scripts[ev] = fn end
+function Widget:HookScript(ev, fn)
+    local old = self._scripts[ev]
+    self._scripts[ev] = function(...) if old then old(...) end fn(...) end
+end
+function Widget:GetScript(ev) return self._scripts[ev] end
+function Widget:Show() self._shown = true; if self._scripts.OnShow then self._scripts.OnShow(self) end end
+function Widget:Hide()
+    local was = self._shown
+    self._shown = false
+    if was and self._scripts.OnHide then self._scripts.OnHide(self) end
+end
+function Widget:IsShown() return self._shown end
+function Widget:IsVisible() return self._shown end
+function Widget:GetHeight() return self._h or 400 end
+function Widget:GetWidth() return self._w or 300 end
+function Widget:SetSize(w, h) self._w, self._h = w, h end
+function Widget:SetHeight(h) self._h = h end
+function Widget:SetWidth(w) self._w = w end
+function Widget:GetLeft() return self._left or 100 end
+function Widget:GetTop() return self._top or 500 end
+function Widget:GetEffectiveScale() return 1 end
+function Widget:GetScale() return 1 end
+function Widget:GetFrameLevel() return 1 end
+function Widget:GetPoint() return "CENTER", nil, "CENTER", 0, 0 end
+function Widget:CreateFontString() return NewWidget("FontString") end
+function Widget:CreateTexture() return NewWidget("Texture") end
+function Widget:GetFontString() return NewWidget("FontString") end
+function Widget:GetStringWidth() return 40 end
+function Widget:GetChecked() return self._checked end
+function Widget:SetChecked(v) self._checked = v end
+function Widget:GetFrames() return self._frames or {} end
+function Widget:RegisterCallback(ev, fn) self._cb = self._cb or {}; self._cb[ev] = fn end
+function Widget:RegisterEvent(ev) self._events = self._events or {}; self._events[ev] = true end
+function Widget:SetText(t) self._text = t end
+function Widget:GetText() return self._text end
+
+-------------------------------------------------------------------------------
+-- Globals
+-------------------------------------------------------------------------------
+_G.CreateFrame = function(kind, name, parent, template) return NewWidget(kind, name) end
+_G.UIParent = NewWidget("Frame", "UIParent")
+_G.GameTooltip = NewWidget("GameTooltip", "GameTooltip")
+_G.UISpecialFrames = {}
+_G.tinsert = table.insert
+_G.wipe = function(t) for k in pairs(t) do t[k] = nil end return t end
+_G.strtrim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+_G.geterrorhandler = function() return function(err) print("  ERROR " .. tostring(err)); failures = failures + 1 end end
+_G.hooksecurefunc = function(a, b, c) end
+_G.InCombatLockdown = function() return false end
+_G.IsModifiedClick = function() return false end
+_G.date = os.date
+_G.time = os.time
+_G.select = select
+_G.print = print
+for _, g in ipairs({ "HEADSLOT", "NECKSLOT", "SHOULDERSLOT", "BACKSLOT", "CHESTSLOT", "WRISTSLOT", "HANDSSLOT", "WAISTSLOT",
+    "LEGSSLOT", "FEETSLOT", "FINGER0SLOT", "FINGER1SLOT", "TRINKET0SLOT", "TRINKET1SLOT", "MAINHANDSLOT", "SECONDARYHANDSLOT" }) do
+    _G[g] = g
+end
+_G.ITEM_UPGRADE_TOOLTIP_FORMAT_STRING = "Upgrade Level: %s %d/%d"
+_G.ITEM_UPGRADE_TOOLTIP_FORMAT = "Upgrade Level: %d/%d"
+_G.Enum = { ItemClass = { Weapon = 2, Armor = 4 }, ItemSlotFilterType = { NoFilter = 15 } }
+_G.DifficultyUtil = { ID = { DungeonChallenge = 8, DungeonMythic = 23 } }
+_G.ScrollBoxListMixin = { Event = { OnUpdate = "OnUpdate" } }
+_G.Settings = nil
+_G.SlashCmdList = {}
+_G.issecretvalue = function() return false end
+
+-- timers: collected and run manually
+local timers = {}
+_G.C_Timer = { After = function(delay, fn) table.insert(timers, { t = delay, fn = fn }) end }
+local function RunTimers()
+    local guard = 0
+    while #timers > 0 and guard < 200 do
+        guard = guard + 1
+        local list = timers
+        timers = {}
+        for _, t in ipairs(list) do t.fn() end
+    end
+end
+
+_G.C_AddOns = { GetAddOnMetadata = function() return "test" end, LoadAddOn = function() return true end, IsAddOnLoaded = function() return false end }
+_G.UnitClass = function() return "Warrior", "WARRIOR", 1 end
+
+-- specialization (12.x: C_SpecializationInfo for spec index/info, globals for the rest)
+_G.C_SpecializationInfo = {
+    GetSpecialization = function() return 1 end,
+    GetSpecializationInfo = function(i) return 72, "Fury", "", 132347 end,
+    GetNumSpecializationsForClassID = function() return 3 end,
+}
+_G.GetLootSpecialization = function() return 0 end
+_G.GetSpecializationInfoByID = function(id) return id, id == 72 and "Fury" or "Arms", "", 132347 end
+_G.GetSpecializationInfoForClassID = function(_, i) return ({ 71, 72, 73 })[i], ({ "Arms", "Fury", "Protection" })[i], "", 1 end
+
+-------------------------------------------------------------------------------
+-- Items: a tiny fake item database
+-- equipLoc, classID, subClassID, icon, name
+-------------------------------------------------------------------------------
+local ITEMS = {
+    [1001] = { "INVTYPE_HEAD", 4, 4, 1, "Crown of Testing" },
+    [1002] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket of Testing" },
+    [1003] = { "INVTYPE_2HWEAPON", 2, 8, 1, "Big Sword" },
+    [1004] = { "INVTYPE_WEAPON", 2, 7, 1, "Small Sword" },
+    [1005] = { "INVTYPE_FINGER", 4, 0, 1, "Ring of Testing" },
+    [1006] = { "INVTYPE_SHIELD", 4, 6, 1, "Shield of Testing" },
+    [1007] = { "INVTYPE_CLOAK", 4, 1, 1, "Cloak of Testing" },
+    [1008] = { "INVTYPE_CHEST", 4, 4, 1, "Chest of Testing" },
+    [2001] = { nil, 12, 0, 1, "Quest Thing" },
+    -- equipped
+    [5001] = { "INVTYPE_HEAD", 4, 4, 1, "Old Helm" },
+    [5013] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket A" },
+    [5014] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket B" },
+    [5016] = { "INVTYPE_2HWEAPON", 2, 8, 1, "Equipped 2H" },
+    [5017] = { "INVTYPE_2HWEAPON", 2, 8, 1, "Equipped 2H OH" },
+    [5011] = { "INVTYPE_FINGER", 4, 0, 1, "Ring A" },
+    [5012] = { "INVTYPE_FINGER", 4, 0, 1, "Ring B" },
+    [5015] = { "INVTYPE_CLOAK", 4, 1, 1, "Old Cloak" },
+    [5005] = { "INVTYPE_CHEST", 4, 4, 1, "Old Chest" },
+}
+local function Link(id) return string.format("|cffa335ee|Hitem:%d::::::::80:72::::::|h[%s]|h|r", id, ITEMS[id][5]) end
+
+-- Fake upgrade-track bonus IDs, sequential per (track, step):
+-- Adventurer 20001-20006, Veteran 20007-20012, Champion 20013-20018, Hero 20019-20024, Myth 20025-20030
+local TRACKS = { "Adventurer", "Veteran", "Champion", "Hero", "Myth" }
+local BASES = { 266, 279, 292, 305, 318 }
+local OFFS = { 0, 3, 6, 10, 13, 16 }
+local function BonusFor(track, step) return 20000 + (track - 1) * 6 + step end
+local function BonusInfo(b)
+    if not b or b < 20001 or b > 20030 then return nil end
+    local idx = b - 20001
+    local t, st = math.floor(idx / 6) + 1, idx % 6 + 1
+    return TRACKS[t], st, BASES[t] + OFFS[st], BASES[t] + 16
+end
+local function LinkWithBonus(id, bonus) return string.format("|cffa335ee|Hitem:%d::::::::80:72:::1:%d|h[%s]|h|r", id, bonus, ITEMS[id][5]) end
+local function BonusesOfLink(link)
+    local body = tostring(link):match("(item:[%-%d:]*)")
+    if not body then return {} end
+    local f = {}
+    for x in (body .. ":"):gmatch("([^:]*):") do f[#f + 1] = x end
+    local n = tonumber(f[14]) or 0
+    local ids = {}
+    for i = 1, n do ids[#ids + 1] = tonumber(f[14 + i]) end
+    return ids, f
+end
+local function BonusOfLink(link)
+    for _, b in ipairs(BonusesOfLink(link)) do if b >= 20001 and b <= 20030 then return b end end
+    return nil
+end
+local function HasBonus(link, id) for _, b in ipairs(BonusesOfLink(link)) do if b == id then return true end end return false end
+local function ContextOf(link) local _, f = BonusesOfLink(link) return f and f[13] or "" end
+-- end-of-dungeon track/step per keystone level (Season 2)
+local function EodBonus(level)
+    if not level or level < 2 then return BonusFor(3, 1) end
+    local map = { [2] = { 3, 2 }, [3] = { 3, 2 }, [4] = { 3, 3 }, [5] = { 3, 4 }, [6] = { 4, 1 }, [7] = { 4, 1 }, [8] = { 4, 2 }, [9] = { 4, 2 } }
+    local ts = map[level] or { 4, 3 }
+    return BonusFor(ts[1], ts[2])
+end
+
+_G.C_Item = {
+    GetItemInfoInstant = function(idOrLink)
+        local id = tonumber(idOrLink) or tonumber(tostring(idOrLink):match("item:(%d+)"))
+        local it = ITEMS[id]
+        if not it then return nil end
+        return id, "Armor", "Plate", it[1], it[4], it[2], it[3]
+    end,
+    GetDetailedItemLevelInfo = function(link)
+        local _, _, ilvl = BonusInfo(BonusOfLink(link))
+        if ilvl then return ilvl end -- a track bonus sets the level even with a context
+        if ContextOf(link) == "23" then return 292 end
+        local b2 = tonumber(tostring(link):match("item:%d+::::::::80:72:::1:(%d+)"))
+        local id = tonumber(tostring(link):match("item:(%d+)"))
+        return EQUIPPED_ILVL and EQUIPPED_ILVL[id] or 0
+    end,
+    GetItemInfo = function() return nil end,
+    GetItemUpgradeInfo = function(link)
+        local track, st, _, maxIlvl = BonusInfo(BonusOfLink(link))
+        if track then return { currentLevel = st, maxLevel = 6, maxItemLevel = maxIlvl, trackString = track } end
+        local id = tonumber(tostring(link):match("item:(%d+)"))
+        if id == 5011 then return { currentLevel = 3, maxLevel = 6, maxItemLevel = 334, trackString = "Myth" } end
+        return nil
+    end,
+}
+
+-- equipped gear: slot -> { itemID, ilvl, upgradeLine }
+local EQUIPPED = {}
+_G.EQUIPPED_ILVL = {}
+local function Equip(slot, itemID, ilvl, upgradeLine)
+    EQUIPPED[slot] = itemID and { itemID = itemID, ilvl = ilvl, line = upgradeLine } or nil
+    if itemID then EQUIPPED_ILVL[itemID] = ilvl end
+end
+local TRACK_INDEX = { Adventurer = 1, Veteran = 2, Champion = 3, Hero = 4, Myth = 5 }
+_G.GetInventoryItemLink = function(_, slot)
+    local e = EQUIPPED[slot]
+    if not e then return nil end
+    local track, st = tostring(e.line or ""):match("Upgrade Level: (%a+) (%d+)/6")
+    if track and TRACK_INDEX[track] then return LinkWithBonus(e.itemID, BonusFor(TRACK_INDEX[track], tonumber(st))) end
+    return Link(e.itemID)
+end
+_G.GetInventoryItemTexture = function(_, slot) return EQUIPPED[slot] and 1 or nil end
+_G.C_TooltipInfo = {
+    GetInventoryItem = function(_, slot)
+        local e = EQUIPPED[slot]
+        if not e then return nil end
+        local lines = { { leftText = ITEMS[e.itemID][5] }, { leftText = "Item Level " .. e.ilvl } }
+        if e.line then table.insert(lines, { leftText = e.line }) end
+        return { lines = lines }
+    end,
+    GetBagItem = function() return nil end,
+    GetHyperlink = function(link)
+        local track, st, ilvl = BonusInfo(BonusOfLink(link))
+        -- the journal context keeps its own upgrade line (like the live client)
+        if ContextOf(link) == "23" then track, st = "Champion", 1; ilvl = ilvl or 292 end
+        if not track and HasBonus(link, 3524) then track, st, ilvl = "Champion", 1, 292 end
+        if not track then return { lines = { { leftText = "Some Item" } } } end
+        return { lines = { { leftText = "Some Item" }, { leftText = "Item Level " .. ilvl }, { leftText = string.format("Upgrade Level: %s %d/6", track, st) } } }
+    end,
+}
+_G.C_Container = { GetContainerNumSlots = function() return 0 end, GetContainerItemLink = function() return nil end }
+
+-- season / challenge mode
+local MAPS = {
+    [587] = { "Murder Row", 2813 },
+    [584] = { "The Blinding Vale", 2859 },
+    [249] = { "Kings' Rest", 1762 },
+}
+_G.C_ChallengeMode = {
+    GetMapTable = function() local t = {} for id in pairs(MAPS) do table.insert(t, id) end table.sort(t) return t end,
+    GetMapUIInfo = function(id) local m = MAPS[id]; if m then return m[1], id, 1800, 1, 1, m[2] end end,
+}
+-- Season 2 curve
+local EOD = { [2] = 295, [3] = 295, [4] = 298, [5] = 302, [6] = 305, [7] = 305, [8] = 308, [9] = 308, [10] = 311 }
+local VAULT = { [2] = 305, [3] = 305, [4] = 308, [5] = 308, [6] = 311, [7] = 315, [8] = 315, [9] = 315, [10] = 318 }
+_G.API_FLAT = false -- simulate reward data not loaded yet
+_G.C_MythicPlus = {
+    GetCurrentSeason = function() return 30 end,
+    GetRewardLevelForDifficultyLevel = function(k)
+        if API_FLAT then return 302, 292 end
+        return VAULT[k] or 318, EOD[k] or 311
+    end,
+    GetRewardLevelFromKeystoneLevel = function(k) if API_FLAT then return 302 end return VAULT[k] or 318 end,
+    RequestMapInfo = function() end,
+    RequestCurrentAffixes = function() end,
+    RequestRewards = function() _G.REQUESTED_REWARDS = (REQUESTED_REWARDS or 0) + 1 end,
+}
+
+-- encounter journal
+local JOURNAL = {
+    [1] = { { id = 100, name = "Old Dungeon", map = 999 }, { id = 1304, name = "Murder Row", map = 2813 } },
+    [2] = {
+        { id = 1304, name = "Murder Row", map = 2813 },
+        { id = 1309, name = "The Blinding Vale", map = 2859 },
+        { id = 1041, name = "Kings' Rest", map = 1762 },
+    },
+}
+local LOOT = {
+    [1304] = { 1001, 1002, 1003, 2001 },
+    [1309] = { 1004, 1005, 1006, 1007 },
+    [1041] = { 1008, 1005 },
+}
+local ej = { tier = 1, instance = nil, diff = 23, classID = 0, specID = 0, preview = 0 }
+local lootDelayed = { [1309] = 1 } -- first read has no links
+_G.EJ_GetNumTiers = function() return 2 end
+_G.EJ_GetCurrentTier = function() return ej.tier end
+_G.EJ_SelectTier = function(t) ej.tier = t end
+_G.EJ_GetInstanceByIndex = function(i, isRaid)
+    if isRaid then return nil end
+    local inst = JOURNAL[ej.tier][i]
+    if not inst then return nil end
+    return inst.id, inst.name, "", 1, 1, 1, 1, 0, "", true, inst.map
+end
+_G.EJ_SelectInstance = function(id) ej.instance = id end
+_G.EJ_SetDifficulty = function(d) ej.diff = d end
+_G.EJ_GetDifficulty = function() return ej.diff end
+_G.EJ_IsValidInstanceDifficulty = function(d) if d == 8 then return ej.tier == 2 end return d == 23 end
+_G.EJ_SetLootFilter = function(c, s) ej.classID, ej.specID = c, s end
+_G.EJ_GetLootFilter = function() return ej.classID, ej.specID end
+_G.EJ_GetNumLoot = function() return LOOT[ej.instance] and #LOOT[ej.instance] or 0 end
+_G.C_EncounterJournal = {
+    SetSlotFilter = function() end,
+    SetPreviewMythicPlusLevel = function(level) ej.preview = level end,
+    GetInstanceForGameMap = function(mapID)
+        for _, list in pairs(JOURNAL) do
+            for _, inst in ipairs(list) do if inst.map == mapID then return inst.id end end
+        end
+        return nil
+    end,
+    GetLootInfoByIndex = function(i)
+        local id = LOOT[ej.instance] and LOOT[ej.instance][i]
+        if not id then return nil end
+        local delayed = lootDelayed[ej.instance]
+        if delayed and delayed > 0 then
+            lootDelayed[ej.instance] = delayed - 1
+            return { itemID = id, encounterID = 1 }
+        end
+        local link
+        if ej.instance == 1041 or ej.diff ~= 8 then
+            link = string.format("|cffa335ee|Hitem:%d::::::::80:72::23:1:3524|h[%s]|h|r", id, ITEMS[id][5])
+        else
+            link = LinkWithBonus(id, EodBonus(ej.preview))
+        end
+        return { itemID = id, encounterID = 1, name = ITEMS[id][5], link = link, icon = 1, slot = "Slot", armorType = "Plate" }
+    end,
+}
+
+-- LFG
+_G.C_LFGList = {
+    GetActivityInfoTable = function(id)
+        if id == 9999 then return { fullName = "The Blinding Vale (Mythic Keystone)", shortName = "Blinding Vale", groupFinderActivityGroupID = 0, isMythicPlusActivity = true, mapID = 0 } end
+        return nil
+    end,
+    GetActivityGroupInfo = function() return nil end,
+    GetSearchResultInfo = function(resultID)
+        if resultID == 1 then return { activityIDs = { 1749 }, leaderName = "x" } end
+        if resultID == 2 then return { activityIDs = { 9999 }, leaderName = "y" } end
+        return nil
+    end,
+}
+_G.PVEFrame = NewWidget("Frame", "PVEFrame")
+_G.LFGListFrame = NewWidget("Frame", "LFGListFrame")
+LFGListFrame.SearchPanel = NewWidget("Frame")
+LFGListFrame.SearchPanel.ScrollBox = NewWidget("Frame")
+
+-------------------------------------------------------------------------------
+-- Load the addon
+-------------------------------------------------------------------------------
+local ns = {}
+local files = { "Core.lua", "Data.lua", "Tracks.lua", "Gear.lua", "Links.lua", "Season.lua", "Loot.lua", "Evaluate.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
+for _, f in ipairs(files) do
+    local chunk, err = loadfile(ADDON_DIR .. f)
+    assert(chunk, err)
+    chunk("SlotFiller", ns)
+end
+print("loaded " .. #files .. " files")
+
+-- Equip: Fury warrior with two 2H (Titan's Grip), Season 2 numbers
+Equip(1, 5001, 302, "Upgrade Level: Champion 4/6")      -- head: Champion (to 308) -> +10 drop 311 Hero is a track upgrade
+Equip(13, 5013, 321, "Upgrade Level: Hero 6/6")          -- trinket A maxed Hero
+Equip(14, 5014, 308, "Upgrade Level: Hero 2/6")          -- trinket B Hero 2/6 (to 321) -> drop 311 is ilvl-only; Voidcore Myth is a track upgrade
+Equip(16, 5016, 311, "Upgrade Level: Hero 3/6")          -- MH Hero 3/6
+Equip(17, 5017, 295, "Upgrade Level: Champion 2/6")      -- OH Champion 2/6 -> 2H drop is a track upgrade via OH
+Equip(11, 5011, 324, "Upgrade Level: Myth 3/6")          -- ring A Myth (to 334)
+Equip(12, 5012, 295, "Upgrade Level: Veteran 6/6")       -- ring B Veteran maxed -> track upgrade
+Equip(15, 5015, 308, "Upgrade Level: Champion 6/6")      -- cloak Champion maxed -> Hero 3/6 drop is a track upgrade (+3)
+Equip(5, 5005, 311, "Upgrade Level: Hero 3/6")           -- chest Hero 3/6 -> drop 311 = no upgrade; Voidcore Myth = track upgrade
+
+-- Fire lifecycle (with poisoned learned names from an early build in saved variables)
+_G.SlotFillerDB = { learnedTrackNames = { Myth = "Hero", Hero = "Hero" } }
+local ev = ns.eventFrame._scripts.OnEvent
+ev(ns.eventFrame, "ADDON_LOADED", "SlotFiller")
+check(ns:TrackKeyForName("Myth") == "Myth" and ns.db.learnedTrackNames.Myth == nil, "poisoned learned track names are purged; English names win")
+check(ns.db ~= nil and ns.cdb ~= nil, "saved variables initialised")
+check(#ns.tracks == 5, "track table built from season defaults (" .. #ns.tracks .. ")")
+check(ns.trackByKey.Champion.min == 292 and ns.trackByKey.Champion.max == 308, "Champion 292-308")
+check(ns.trackByKey.Hero.ilvls[3] == 311 and ns.trackByKey.Myth.max == 334, "Hero 3/6 = 311, Myth 6/6 = 334")
+ev(ns.eventFrame, "PLAYER_LOGIN")
+RunTimers()
+check(#ns.dungeons == 3, "dungeon pool built from C_ChallengeMode (" .. #ns.dungeons .. ")")
+check(ns.dungeonByMapID[587] and ns.dungeonByMapID[587].instanceMapID == 2813, "instance map id from GetMapUIInfo")
+check((REQUESTED_REWARDS or 0) > 0, "RequestRewards called at login")
+
+-- gear
+ns:ScanGear()
+check(ns.gear[1].track and ns.gear[1].track.key == "Champion", "head resolved to Champion track")
+check(ns.gear[1].potential == 308, "head potential = Champion max 308 (" .. tostring(ns.gear[1].potential) .. ")")
+check(ns.gear[14].potential == 321, "trinket B potential = Hero max 321")
+check(ns.gear[11].track and ns.gear[11].track.key == "Myth" and ns.gear[11].potential == 334, "ring A resolved to Myth (to 334) via C_Item.GetItemUpgradeInfo")
+check(ns.gear[11].trackName == "Myth" and ns.gear[11].cur == 3, "direct upgrade API used before tooltip parsing")
+check(ns:TrackDisplayName(ns.trackByKey.Hero) == "Hero" and ns:TrackDisplayName(ns.trackByKey.Myth) == "Myth", "track display names are correct")
+check(ns.trackByLocalName["Champion"] ~= nil, "learned localized track name")
+
+-- loot scan (async)
+RunTimers()
+ev(ns.eventFrame, "EJ_LOOT_DATA_RECIEVED")
+RunTimers()
+ev(ns.eventFrame, "EJ_LOOT_DATA_RECIEVED")
+RunTimers()
+check(ns.loot ~= nil, "loot scan finished and cached")
+local mr = ns:GetDungeonLoot(587)
+check(mr and #mr == 3, "Murder Row: 3 equippable items (quest item dropped) got " .. tostring(mr and #mr))
+local bv = ns:GetDungeonLoot(584)
+check(bv and #bv == 4, "Blinding Vale scanned after delayed loot data (" .. tostring(bv and #bv) .. ")")
+check(ns.cdb.lootCache[30] and ns.cdb.lootCache[30][72], "cache keyed by season and spec")
+check(ej.tier == 1, "journal tier restored after scan (" .. tostring(ej.tier) .. ")")
+check(ns.dungeonByMapID[587].journalID == 1304, "journal instance via GetInstanceForGameMap")
+check(ns.journalTier[1304] == 2, "instance mapped to its last (current season) tier")
+check(ns.loot.dungeons[587].difficulty == 8, "Murder Row read at Mythic Keystone difficulty (" .. tostring(ns.loot.dungeons[587].difficulty) .. ")")
+
+-- evaluation at +10
+ns.db.targetKey = 10
+ns:Evaluate()
+local ctx = ns.dropCtx
+check(ctx.ilvl == 311 and ctx.source == "api", "drop ilvl at +10 from API = 311")
+check(ctx.track and ctx.track.key == "Hero" and ctx.step == 3 and ctx.potential == 321, "drop resolved as Hero 3/6 (to 321)")
+check(ctx.voidcore and ctx.voidcore.ilvl == 318 and ctx.voidcore.track.key == "Myth" and ctx.voidcore.step == 1 and ctx.voidcore.potential == 334, "Voidcore at +10 = 318 Myth 1/6 (to 334)")
+local r = ns:ResultForDungeon(ns.dungeonByMapID[587])
+local byItem = {}
+for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
+check(byItem[1001].class == ns.UPGRADE_TRACK, "head drop vs Champion 4/6 = track upgrade")
+check(byItem[1002].slotID == 14 and byItem[1002].class == ns.UPGRADE_ILVL, "trinket drop targets the weaker trinket and is an ilvl upgrade")
+check(byItem[1002].voidcore and byItem[1002].voidcore.class == ns.UPGRADE_TRACK, "same trinket from a Voidcore roll (Myth) is a track upgrade")
+check(byItem[1003].slotID == 17 and byItem[1003].class == ns.UPGRADE_TRACK, "2H drop with Titan's Grip targets the weaker hand (OH) as track upgrade")
+check(r.upgrades == 3 and r.total == 3 and r.vcUpgrades == 3, "Murder Row: 3/3 drop upgrades, 3/3 Voidcore upgrades")
+
+local r2 = ns:ResultForDungeon(ns.dungeonByMapID[584])
+byItem = {}
+for _, e in ipairs(r2.items) do byItem[e.item.itemID] = e end
+check(byItem[1004].slotID == 16, "1H drop while wielding two 2H targets MH")
+check(byItem[1004].class == ns.UPGRADE_NONE and byItem[1004].voidcore.class == ns.UPGRADE_TRACK, "1H drop: no upgrade over Hero 3/6, but Myth roll is")
+check(byItem[1005].slotID == 12 and byItem[1005].class == ns.UPGRADE_TRACK, "ring drop targets Veteran ring as track upgrade")
+check(byItem[1006].class == ns.UPGRADE_NONE and byItem[1006].reason == "off hand holds a weapon", "shield vs equipped 2H off-hand: not an upgrade")
+check(byItem[1007].class == ns.UPGRADE_TRACK and byItem[1007].gain == 3, "cloak: Champion 6/6 (308) -> Hero 3/6 (311) is a track upgrade with +3")
+
+local r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+byItem = {}
+for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
+check(byItem[1008].class == ns.UPGRADE_NONE and byItem[1008].voidcore.class == ns.UPGRADE_TRACK, "chest Hero 3/6 vs Hero 3/6 drop = none; Voidcore Myth = track upgrade")
+check(byItem[1005].slotID == 12, "ring in second dungeon still targets Veteran ring")
+check(r3.vcChance == 1 and r3.chance == 0.5, "Kings' Rest: 50% drop chance, 100% Voidcore chance")
+
+check(ns.results[1].upgrades >= ns.results[2].upgrades, "results sorted by drop upgrades")
+ns.db.sortMode = "voidcore"
+ns:Evaluate()
+check(ns.results[1].vcChance >= ns.results[#ns.results].vcChance, "results sorted by Voidcore chance")
+ns.db.sortMode = "upgrades"
+
+-- countIlvlUpgrades off
+ns.db.countIlvlUpgrades = false
+ns:Evaluate()
+r = ns:ResultForDungeon(ns.dungeonByMapID[587])
+check(r.upgrades == 2, "ilvl-only upgrades excluded when disabled (" .. r.upgrades .. ")")
+ns.db.countIlvlUpgrades = true
+
+-- slot states
+ns.cdb.slotState[1] = "skip"
+ns:Evaluate()
+r = ns:ResultForDungeon(ns.dungeonByMapID[587])
+byItem = {}
+for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
+check(byItem[1001].class == ns.UPGRADE_NONE and byItem[1001].reason == "slot skipped", "skipped slot ignores drops")
+ns.cdb.slotState[1] = nil
+ns.cdb.itemState[1002] = "exclude"
+ns:Evaluate()
+r = ns:ResultForDungeon(ns.dungeonByMapID[587])
+byItem = {}
+for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
+check(byItem[1002].class == ns.UPGRADE_NONE and byItem[1002].voidcore.class == ns.UPGRADE_NONE, "excluded item ignored for drop and Voidcore")
+ns.cdb.itemState[1002] = nil
+ns.cdb.itemState[1008] = "want"
+ns:Evaluate()
+r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+byItem = {}
+for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
+check(byItem[1008].class == ns.UPGRADE_WANT, "wanted item counts")
+ns.cdb.itemState[1008] = nil
+
+-- key level change
+ns:SetTargetKey(4)
+RunTimers()
+check(ns.dropCtx.ilvl == 298 and ns.dropCtx.track.key == "Champion" and ns.dropCtx.step == 3, "+4 drop = Champion 3/6 (298)")
+check(ns.dropCtx.voidcore.ilvl == 308 and ns.dropCtx.voidcore.track.key == "Hero" and ns.dropCtx.voidcore.step == 2, "+4 Voidcore = Hero 2/6 (308)")
+ns:SetTargetKey(10)
+RunTimers()
+
+-- item links per key level / Voidcore
+local head
+for _, it in ipairs(ns:GetDungeonLoot(587)) do if it.itemID == 1001 then head = it end end
+check(head and head.links and head.links[10] and BonusOfLink(head.links[10]) == BonusFor(4, 3), "journal preview link captured for +10 (Hero 3/6)")
+check(head.links[2] and BonusOfLink(head.links[2]) == BonusFor(3, 2) and head.links[3] == nil, "preview links stored only where the level changes")
+local link, kind = ns:LinkForContext(head, ns.dropCtx)
+check(kind == "exact" and BonusOfLink(link) == BonusFor(4, 3), "tooltip link at +10 is Hero 3/6")
+ns:SetTargetKey(5); RunTimers()
+link, kind = ns:LinkForContext(head, ns.dropCtx)
+check(kind == "exact" and BonusOfLink(link) == BonusFor(3, 4), "tooltip link at +5 is Champion 4/6")
+ns:SetTargetKey(10); RunTimers()
+ns:StepTargetKey(1); RunTimers()
+check(ns.db.voidcoreMode and ns.db.targetKey == 10 and ns.dropCtx.isVoidcore and ns.dropCtx.ilvl == 318, "selector past +10 becomes Voidcore (318)")
+check(ns:TargetLabel():find("Voidcore") ~= nil, "selector label shows Voidcore")
+link, kind = ns:LinkForContext(head, ns.dropCtx)
+check(kind == "exact" and BonusOfLink(link) == BonusFor(5, 1), "Voidcore tooltip link is Myth 1/6 via discovered bonus id")
+check(ns.db.linkBonus[30] and ns.db.linkBonus[30].targets["318/1/Myth"] == BonusFor(5, 1), "discovered bonus id cached per season")
+r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+byItem = {}
+for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
+check(byItem[1008].class == ns.UPGRADE_TRACK, "in Voidcore mode the Hero 3/6 chest drop is a track upgrade")
+ns:StepTargetKey(1); RunTimers()
+check(ns.db.voidcoreMode, "stepping up from Voidcore stays at Voidcore")
+ns:StepTargetKey(-1); RunTimers()
+check(not ns.db.voidcoreMode and ns.db.targetKey == 10 and not ns.dropCtx.isVoidcore, "stepping down from Voidcore returns to +10")
+ns.db.linkBonus = {}
+local l2 = ns:LinkAtLevel(head.link, 311, 3, "Hero")
+check(l2 and BonusOfLink(l2) == BonusFor(4, 3), "bonus discovery from the base link alone finds Hero 3/6")
+local l3 = ns:LinkAtLevel(head.link, 318, 1, "Myth")
+check(l3 and BonusOfLink(l3) == BonusFor(5, 1), "bonus discovery distinguishes Myth 1/6 from Hero 5/6 at the same item level")
+-- links without any track bonus (journal at plain Mythic): anchors come from equipped gear
+ns.db.linkBonus = {}
+local chest
+for _, it in ipairs(ns:GetDungeonLoot(249)) do if it.itemID == 1008 then chest = it end end
+check(chest and HasBonus(chest.link, 3524) and BonusOfLink(chest.link) == nil and not chest.links, "Kings' Rest links carry only the Mythic tag 3524")
+ns.gearAnchors = nil
+local l4 = ns:LinkAtLevel(chest.link, 311, 3, "Hero")
+check(l4 and BonusOfLink(l4) == BonusFor(4, 3) and ContextOf(l4) ~= "23", "track bonus grafted from gear anchors with the pinning context cleared")
+check(ns.gearAnchors and #ns.gearAnchors >= 1, "gear anchors learned from equipped items")
+check(not ns.db.linkBonus[30].known[3524], "difficulty tag 3524 is not treated as a track bonus")
+local l5 = ns:LinkAtLevel(chest.link, 318, 1, "Myth")
+check(l5 and BonusOfLink(l5) == BonusFor(5, 1) and ContextOf(l5) ~= "23", "Voidcore link (Myth 1/6) built with the context removed, not mislabelled Champion 1/6")
+local l7 = ns:LinkAtLevel(chest.link, 305, 1, "Hero")
+check(l7 and BonusOfLink(l7) == BonusFor(4, 1) and ContextOf(l7) ~= "23", "+6 link (Hero 1/6) is not mislabelled by the journal context")
+local l8 = ns:LinkAtLevel(chest.link, 318, 1, "Myth")
+local pi, pn, pc = ns:ProbeLink(l8)
+check(pi == 318 and pn == "Myth" and pc == 1, "Voidcore link renders as 318 Myth 1/6")
+local l6, k6 = ns:LinkForContext(chest, ns.dropCtx)
+check(k6 == "exact" and BonusOfLink(l6) == BonusFor(4, 3), "tooltip link for a bonus-less item is exact at +10")
+ns:PrintLinkDiagnostics()
+
+-- reward API not loaded yet: flat curve -> season fallback table
+API_FLAT = true
+ns:ClearRewardCache()
+local ilvl, src = ns:RewardIlvl(10)
+check(ilvl == 311 and src == "fallback", "flat reward API falls back to the season table (" .. tostring(ilvl) .. ", " .. tostring(src) .. ")")
+local v, vsrc = ns:VaultIlvl(10)
+check(v == 318 and vsrc == "fallback", "vault level from fallback table")
+check(ns:RewardIlvl(2) == 295 and ns:RewardIlvl(15) == 311, "fallback covers +2 and beyond the table")
+API_FLAT = false
+ns:ClearRewardCache()
+RunTimers()
+check(ns:RewardIlvl(10) == 311 and select(2, ns:RewardIlvl(10)) == "api", "API used again once the curve rises")
+
+-- calibration: stale defaults (previous season, 13 lower); equipped items must rebuild the table
+ns.db.trackOverride = nil
+ns.SEASON_DATA_LATEST.championBase = 279
+ns.trackOffsetApplied = nil
+ns:ApplyTrackDefaults()
+check(ns.trackByKey.Hero.min == 292, "stale defaults applied (Hero base 292)")
+ns:ScanGear()
+check(ns.trackOffsetApplied == 13, "stale defaults auto-calibrated by +13 (" .. tostring(ns.trackOffsetApplied) .. ")")
+check(ns.trackByKey.Hero.min == 305 and ns.trackByKey.Hero.max == 321, "Hero after calibration = 305-321")
+check(ns.db.calibratedChampionBase == 292, "calibrated base remembered in saved variables")
+-- no defaults at all: bootstrap purely from gear
+ns.SEASON_DATA_LATEST.championBase = 0
+ns.db.calibratedChampionBase = nil
+ns.tracksCalibrated = nil
+ns:ApplyTrackDefaults()
+check(not ns:HasTrackData(), "no track data without defaults")
+ns:ScanGear()
+check(ns:HasTrackData() and ns.trackByKey.Champion.min == 292, "track table bootstrapped from equipped items")
+check(ns.gear[1].track and ns.gear[1].track.key == "Champion" and ns.gear[1].potential == 308, "gear re-resolved after bootstrap")
+local t = ns:ResolveTrack("Held", 2, 6, 308)
+check(t and t.key == "Hero", "non-English track name resolved structurally")
+check(ns:TrackKeyForName("Held") == "Hero", "non-English name learned")
+ns.SEASON_DATA_LATEST.championBase = 292
+
+-- activity mapping
+check(ns:DungeonForActivity(1749) == ns.dungeonByMapID[587], "activity id -> dungeon via fallback table")
+check(ns:DungeonForActivity(9999) == ns.dungeonByMapID[584], "activity name -> dungeon via name match")
+check(ns.DungeonForResult(1) == ns.dungeonByMapID[587], "search result -> dungeon")
+
+-- UI smoke test: show/hide with PVEFrame
+PVEFrame._shown = true
+ns.db.anchorSide = "left"
+ns:ShowWindow(false)
+RunTimers()
+check(ns:IsWindowShown(), "window shown")
+ns:RefreshWindow()
+ns:ToggleOptionsPanel()
+ns:RefreshOptionsPanel()
+ns:HideWindow(true)
+check(not ns:IsWindowShown(), "window hidden")
+ns:PrintStatus()
+
+-- slash commands
+SlashCmdList.SLOTFILLER("key 8")
+RunTimers()
+check(ns.db.targetKey == 8, "/sf key 8")
+SlashCmdList.SLOTFILLER("help")
+
+print(failures == 0 and "\nALL CHECKS PASSED" or ("\n" .. failures .. " CHECK(S) FAILED"))
+os.exit(failures == 0 and 0 or 1)

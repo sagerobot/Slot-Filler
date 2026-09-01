@@ -1,0 +1,22 @@
+## Interface: 120100, 120007
+## Title: Slot Filler
+## Notes: Shows which Mythic+ dungeons drop gear you can actually use, right next to the Group Finder.
+## Author: sagerobot
+## Version: 0.1.0
+## SavedVariables: SlotFillerDB
+## SavedVariablesPerCharacter: SlotFillerCharDB
+## IconTexture: Interface\Icons\INV_Misc_Bag_17
+## X-Category: Loot
+## OptionalDeps: RaiderIO
+
+Core.lua
+Data.lua
+Tracks.lua
+Gear.lua
+Links.lua
+Season.lua
+Loot.lua
+Evaluate.lua
+UI.lua
+Options.lua
+LFGHook.lua
