@@ -1,16 +1,34 @@
--- Slot Filler: scan dungeon loot tables from the Encounter Journal.
+-- Slot Filler: scan dungeon and raid loot tables from the Encounter Journal.
 --
--- The journal already knows which items each dungeon drops and can filter by
--- class/spec, so the drop table never needs to be maintained by hand. Loot is
--- read at Mythic Keystone difficulty (same item pool as Mythic), cached per
--- season + spec in the character's saved variables.
+-- The journal already knows which items each dungeon and boss drops and can
+-- filter by class/spec, so the drop table never needs to be maintained by
+-- hand. Dungeon loot is read at Mythic Keystone difficulty (same item pool as
+-- Mythic); raid loot per boss at each raid difficulty. Cached per season +
+-- spec in the character's saved variables.
 local _, ns = ...
 
-local CACHE_VERSION = 3
+local CACHE_VERSION = 4
 local CACHE_MAX_AGE = 7 * 24 * 3600
 
 local DIFF_KEYSTONE = (DifficultyUtil and DifficultyUtil.ID and DifficultyUtil.ID.DungeonChallenge) or 8
 local DIFF_MYTHIC = (DifficultyUtil and DifficultyUtil.ID and DifficultyUtil.ID.DungeonMythic) or 23
+local DIFF_STORY = 220
+local DUNGEON_DIFFS = { [1] = true, [2] = true, [DIFF_KEYSTONE] = true, [DIFF_MYTHIC] = true, [24] = true }
+
+-- Raid difficulties in the order the Raid tab shows them. `track` is the
+-- direct drop's upgrade track this season; the Voidcore roll and the vault
+-- give one track up. The Tidebound Grotto lair has a "World" difficulty in
+-- place of LFR: whatever other difficulty the journal calls valid takes the
+-- LFR slot.
+local DID = DifficultyUtil and DifficultyUtil.ID or {}
+ns.RAID_DIFFS = {
+    { key = "lfr",    name = "LFR",    id = DID.PrimaryRaidLFR or 17,    track = "Veteran" },
+    { key = "normal", name = "Normal", id = DID.PrimaryRaidNormal or 14, track = "Champion" },
+    { key = "heroic", name = "Heroic", id = DID.PrimaryRaidHeroic or 15, track = "Hero" },
+    { key = "mythic", name = "Mythic", id = DID.PrimaryRaidMythic or 16, track = "Myth" },
+}
+ns.RAID_DIFF_BY_KEY = {}
+for _, d in ipairs(ns.RAID_DIFFS) do ns.RAID_DIFF_BY_KEY[d.key] = d end
 
 -------------------------------------------------------------------------------
 -- Spec helpers
@@ -134,6 +152,35 @@ local function EquipInfo(itemID)
     return equipLoc, icon, classID, subClassID
 end
 
+-- The journal's current loot list (instance or selected encounter).
+local function ReadLootItems()
+    local n = EJ_GetNumLoot() or 0
+    local items, incomplete = {}, false
+    for i = 1, n do
+        local info = C_EncounterJournal.GetLootInfoByIndex(i)
+        if info and info.itemID then
+            if not info.link or not info.name then incomplete = true end
+            local equipLoc, icon, itemClassID, subClassID = EquipInfo(info.itemID)
+            table.insert(items, {
+                itemID = info.itemID,
+                encounterID = info.encounterID,
+                name = info.name,
+                link = info.link,
+                icon = info.icon or icon,
+                slotText = info.slot,
+                armorType = info.armorType,
+                equipLoc = equipLoc,
+                classID = itemClassID,
+                subClassID = subClassID,
+                veryRare = info.displayAsVeryRare or nil,
+                extremelyRare = info.displayAsExtremelyRare or nil,
+                perPlayer = info.displayAsPerPlayerLoot or nil,
+            })
+        end
+    end
+    return items, incomplete, n
+end
+
 -- Key levels whose end-of-dungeon item level differs from the level below.
 local function DistinctRewardLevels()
     local levels, last = {}, nil
@@ -251,34 +298,95 @@ local function ReadInstanceLoot(journalID, classID, specID)
     if C_EncounterJournal.SetSlotFilter and Enum and Enum.ItemSlotFilterType then
         C_EncounterJournal.SetSlotFilter(Enum.ItemSlotFilterType.NoFilter)
     end
-    local n = EJ_GetNumLoot() or 0
-    local items, incomplete = {}, false
-    for i = 1, n do
-        local info = C_EncounterJournal.GetLootInfoByIndex(i)
-        if info and info.itemID then
-            if not info.link or not info.name then incomplete = true end
-            local equipLoc, icon, itemClassID, subClassID = EquipInfo(info.itemID)
-            table.insert(items, {
-                itemID = info.itemID,
-                encounterID = info.encounterID,
-                name = info.name,
-                link = info.link,
-                icon = info.icon or icon,
-                slotText = info.slot,
-                armorType = info.armorType,
-                equipLoc = equipLoc,
-                classID = itemClassID,
-                subClassID = subClassID,
-                veryRare = info.displayAsVeryRare or nil,
-                extremelyRare = info.displayAsExtremelyRare or nil,
-                perPlayer = info.displayAsPerPlayerLoot or nil,
-            })
-        end
-    end
+    local items, incomplete, n = ReadLootItems()
     if not incomplete then
         CapturePreviewLinks(items, n)
     end
     return items, incomplete, n, diff
+end
+
+-------------------------------------------------------------------------------
+-- Raids: the season's raids and their bosses, and one boss's loot at one
+-- difficulty
+-------------------------------------------------------------------------------
+local function ValidDifficulty(id)
+    if EJ_IsValidInstanceDifficulty and EJ_IsValidInstanceDifficulty(id) then return true end
+    if C_EncounterJournal.InstanceHasDifficultyID then
+        local ok, has = pcall(C_EncounterJournal.InstanceHasDifficultyID, id)
+        if ok and has then return true end
+    end
+    return false
+end
+
+-- Difficulty ids the selected raid offers, by our key. A raid without LFR
+-- (the lair) puts its other difficulty, "World", in that slot.
+local function RaidDifficultyIDs()
+    local ids, names, taken = {}, {}, {}
+    for _, def in ipairs(ns.RAID_DIFFS) do
+        if ValidDifficulty(def.id) then ids[def.key] = def.id; taken[def.id] = true end
+    end
+    if not ids.lfr then
+        for id = 1, 300 do
+            if not taken[id] and not DUNGEON_DIFFS[id] and id ~= DIFF_STORY and ValidDifficulty(id) then
+                ids.lfr = id
+                break
+            end
+        end
+    end
+    if DifficultyUtil and DifficultyUtil.GetDifficultyName then
+        for key, id in pairs(ids) do
+            local ok, name = pcall(DifficultyUtil.GetDifficultyName, id)
+            if ok and type(name) == "string" and name ~= "" then names[key] = name end
+        end
+    end
+    return ids, names
+end
+
+-- The season's raids and their bosses from the journal's last tier ("Current
+-- Season"), or the tier before it when that lists none.
+local function ReadRaidList()
+    local raids = {}
+    if not (EJ_GetNumTiers and EJ_SelectTier and EJ_GetInstanceByIndex and EJ_GetEncounterInfoByIndex) then return raids end
+    local numTiers = EJ_GetNumTiers() or 0
+    for tier = numTiers, math.max(1, numTiers - 1), -1 do
+        EJ_SelectTier(tier)
+        local index = 1
+        while true do
+            local instanceID, name = EJ_GetInstanceByIndex(index, true)
+            if not instanceID then break end
+            local raid = { instanceID = instanceID, name = name, index = index, tier = tier, bosses = {} }
+            EJ_SelectInstance(instanceID)
+            local b = 1
+            while true do
+                local bossName, _, encounterID = EJ_GetEncounterInfoByIndex(b, instanceID)
+                if not encounterID then break end
+                local portrait
+                if EJ_GetCreatureInfo then
+                    local ok, _, _, _, _, icon = pcall(EJ_GetCreatureInfo, 1, encounterID)
+                    if ok then portrait = icon end
+                end
+                raid.bosses[b] = { encounterID = encounterID, name = bossName, index = b, portrait = portrait, loot = {} }
+                b = b + 1
+            end
+            raid.difficulties, raid.difficultyNames = RaidDifficultyIDs()
+            if #raid.bosses > 0 then table.insert(raids, raid) end
+            index = index + 1
+        end
+        if #raids > 0 then break end
+    end
+    return raids
+end
+
+local function ReadEncounterLoot(raid, boss, diffID, classID, specID)
+    EJ_SelectTier(raid.tier)
+    EJ_SelectInstance(raid.instanceID)
+    EJ_SetDifficulty(diffID)
+    EJ_SelectEncounter(boss.encounterID)
+    EJ_SetLootFilter(classID, specID or 0)
+    if C_EncounterJournal.SetSlotFilter and Enum and Enum.ItemSlotFilterType then
+        C_EncounterJournal.SetSlotFilter(Enum.ItemSlotFilterType.NoFilter)
+    end
+    return ReadLootItems()
 end
 
 -------------------------------------------------------------------------------
@@ -299,6 +407,7 @@ end
 function ns:CacheIsFresh(entry)
     if not entry then return false end
     if (time() - (entry.time or 0)) > CACHE_MAX_AGE then return false end
+    if type(entry.raids) ~= "table" then return false end
     -- the pool changed?
     for _, d in ipairs(self.dungeons) do
         if not entry.dungeons[d.challengeMapID] then return false end
@@ -306,7 +415,7 @@ function ns:CacheIsFresh(entry)
     return true
 end
 
-function ns:StoreLoot(results)
+function ns:StoreLoot(results, raids)
     local season, spec = CacheKey()
     self.cdb.lootCache[season] = self.cdb.lootCache[season] or {}
     self.cdb.lootCache[season][spec] = {
@@ -314,17 +423,38 @@ function ns:StoreLoot(results)
         time = time(),
         classID = self.playerClassID,
         dungeons = results,
+        raids = raids or {},
     }
     return self.cdb.lootCache[season][spec]
 end
 
--- Current loot in use: [challengeMapID] = { items = {...}, difficulty = , journalID = }
+-- Current loot in use:
+--   dungeons[challengeMapID] = { items = {...}, difficulty = , journalID = }
+--   raids = { { instanceID, name, bosses = { { encounterID, name, index, portrait,
+--              loot = { [diffKey] = { items = {...}, difficulty = id } } } } } }
 ns.loot = nil
 
 function ns:GetDungeonLoot(challengeMapID)
     local entry = self.loot
     local d = entry and entry.dungeons and entry.dungeons[challengeMapID]
     return d and d.items or nil
+end
+
+-- The season's raids, in journal order; empty until loot has been scanned.
+function ns:GetRaids()
+    return self.loot and self.loot.raids or {}
+end
+
+function ns:GetBossLoot(boss, diffKey)
+    local l = boss and boss.loot and boss.loot[diffKey]
+    return l and l.items or nil
+end
+
+-- "Heroic", or the raid's own name for the slot ("World" for the lair).
+function ns:RaidDifficultyName(raid, diffKey)
+    local name = raid and raid.difficultyNames and raid.difficultyNames[diffKey]
+    local def = self.RAID_DIFF_BY_KEY[diffKey]
+    return name or (def and def.name) or tostring(diffKey)
 end
 
 -------------------------------------------------------------------------------
@@ -361,7 +491,7 @@ local function FinishScan(aborted)
         ns:Fire("SCAN_PROGRESS", nil)
         return
     end
-    ns.loot = ns:StoreLoot(s.results)
+    ns.loot = ns:StoreLoot(s.results, s.raids)
     ns.scanning = false
     ns:Debug("Loot scan complete:", s.scannedCount, "dungeons")
     ns:Fire("SCAN_PROGRESS", nil)
@@ -376,6 +506,30 @@ local function ScheduleStep(delay)
     end)
 end
 
+-- keep only equippable gear (drop quest items, recipes, etc.)
+local function Equippable(items)
+    local out = {}
+    for _, it in ipairs(items) do
+        if it.equipLoc and ns.INVTYPE_SLOTS[it.equipLoc] then table.insert(out, it) end
+    end
+    return out
+end
+
+local function NextStep()
+    scan.scannedCount = scan.scannedCount + 1
+    scan.index = scan.index + 1
+    scan.retries = 0
+    return ScheduleStep(0)
+end
+
+-- A read that came back empty or without links: the journal is still
+-- loading it. EJ_LOOT_DATA_RECIEVED retries sooner; the timer is the net.
+local function Retry()
+    scan.retries = scan.retries + 1
+    scan.waitingForData = true
+    return ScheduleStep(0.6)
+end
+
 function ScanStep()
     if not scan then return end
     if EncounterJournal and EncounterJournal:IsShown() then
@@ -383,10 +537,19 @@ function ScanStep()
         scan.waitingForJournalClose = true
         return
     end
-    local d = scan.queue[scan.index]
-    if not d then
+    local entry = scan.queue[scan.index]
+    if not entry then
         return FinishScan(false)
     end
+    if entry.boss then
+        ns:Fire("SCAN_PROGRESS", scan.index, #scan.queue, entry.boss.name .. " (" .. entry.diff.name .. ")")
+        local items, incomplete, n = ReadEncounterLoot(entry.raid, entry.boss, entry.diffID, scan.classID, scan.specID)
+        if (incomplete or n == 0) and scan.retries < MAX_RETRIES then return Retry() end
+        scan.waitingForData = false
+        entry.boss.loot[entry.diff.key] = { items = Equippable(items), difficulty = entry.diffID, raw = n, incomplete = incomplete or nil }
+        return NextStep()
+    end
+    local d = entry.dungeon
     ns:Fire("SCAN_PROGRESS", scan.index, #scan.queue, d.name)
     local journalID = ns:JournalInstanceFor(d)
     if not journalID then
@@ -397,27 +560,13 @@ function ScanStep()
         return ScheduleStep(0)
     end
     local items, incomplete, n, diffUsed = ReadInstanceLoot(journalID, scan.classID, scan.specID)
-    if (incomplete or n == 0) and scan.retries < MAX_RETRIES then
-        scan.retries = scan.retries + 1
-        scan.waitingForData = true
-        -- EJ_LOOT_DATA_RECIEVED will retry sooner; this is the safety net
-        return ScheduleStep(0.6)
-    end
+    if (incomplete or n == 0) and scan.retries < MAX_RETRIES then return Retry() end
     scan.waitingForData = false
-    -- keep only equippable gear (drop quest items, recipes, etc.)
-    local equippable = {}
-    for _, it in ipairs(items) do
-        if it.equipLoc and ns.INVTYPE_SLOTS[it.equipLoc] then
-            table.insert(equippable, it)
-        end
-    end
+    local equippable = Equippable(items)
     local previewCount = 0
     for _, it in ipairs(equippable) do if it.links then previewCount = previewCount + 1 end end
     scan.results[d.challengeMapID] = { items = equippable, journalID = journalID, raw = n, incomplete = incomplete or nil, previews = previewCount, difficulty = diffUsed }
-    scan.scannedCount = scan.scannedCount + 1
-    scan.index = scan.index + 1
-    scan.retries = 0
-    return ScheduleStep(0)
+    return NextStep()
 end
 
 function ns:StartLootScan(reason)
@@ -442,7 +591,18 @@ function ns:StartLootScan(reason)
         specID = specID,
         journalState = SaveJournalState(),
     }
-    for _, d in ipairs(self.dungeons) do table.insert(scan.queue, d) end
+    for _, d in ipairs(self.dungeons) do table.insert(scan.queue, { dungeon = d }) end
+    -- raid bosses after the dungeons: selecting an encounter narrows the
+    -- journal's loot list, and dungeons are read with none selected
+    scan.raids = ReadRaidList()
+    for _, raid in ipairs(scan.raids) do
+        for _, boss in ipairs(raid.bosses) do
+            for _, def in ipairs(ns.RAID_DIFFS) do
+                local id = raid.difficulties[def.key]
+                if id then table.insert(scan.queue, { raid = raid, boss = boss, diff = def, diffID = id }) end
+            end
+        end
+    end
     self.scanning = true
     self:Debug("Loot scan started", reason or "", "spec", specID)
     ScanStep()
@@ -453,7 +613,7 @@ function ns:RescanLoot(verbose)
         if verbose then self:Print("Scan already in progress.") end
         return
     end
-    if verbose then self:Print("Scanning dungeon loot tables for", (self:SpecName(self:GetEvalSpecID()))) end
+    if verbose then self:Print("Scanning dungeon and raid loot tables for", (self:SpecName(self:GetEvalSpecID()))) end
     self:StartLootScan("manual")
 end
 

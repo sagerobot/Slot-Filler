@@ -1,11 +1,13 @@
--- Slot Filler: main window. Three tabs (Dungeons, Gear, Settings) in a shell
--- that EllesmereUI paints when present (see Style.lua). Docks to the left of
--- the Dungeons & Raids window, tabs hanging under the frame like its own.
+-- Slot Filler: main window. Four tabs (Dungeons, Raid, Gear, Settings) in a
+-- shell that EllesmereUI paints when present (see Style.lua). Docks to the
+-- left of the Dungeons & Raids window, tabs hanging under the frame like its
+-- own.
 --
 -- Dungeons: dungeon rows that open into the drops they hold.
--- Gear:     slot rows that open into every drop for that slot, from all
---           dungeons, ordered by stat compatibility, so same-slot drops can
---           be compared and starred.
+-- Raid:     boss rows, judged at the difficulty picked on the tab's strip.
+-- Gear:     slot rows that open into every drop for that slot, from
+--           dungeons, raids or both, ordered by stat compatibility, so
+--           same-slot drops can be compared and starred.
 local _, ns = ...
 local Style = ns.Style
 
@@ -14,7 +16,9 @@ local FREE_HEIGHT = 520
 local PAD = 8            -- content inset from the window edge
 local TITLE_H = 25       -- EllesmereUI title band height
 local TOOLBAR_H = 68     -- spec/key row, weights row and the info line, shared by the list tabs
-local TAB_H, TAB_W = 22, 96
+local TAB_H, TAB_W = 22, 88
+local STRIP_H = 24       -- filter strip above a list's column header
+local SECTION_H = 22     -- raid name above its bosses
 local ROW_H = 28         -- dungeon / slot row
 local ITEM_H = 20        -- drop row under an expanded row
 local GUTTER = 12        -- scrollbar gutter right of a list
@@ -22,8 +26,10 @@ local COL_DROPS, COL_WANTED = 56, 68
 
 local frame
 local dungeonRows, dungeonItems = {}, {}
+local raidRows, raidItems, raidHeaders = {}, {}, {}
 local gearRows, gearItems = {}, {}
 ns.uiExpandedMapID = nil
+ns.uiExpandedEncounterID = nil
 ns.uiExpandedSlotID = nil
 
 local NONE, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
@@ -138,9 +144,11 @@ local function StarTexture(parent, size)
     return t
 end
 
-local function SetStar(tex, on)
+-- Wanted star in the accent colour; the Voidcore star in purple.
+local function SetStar(tex, on, voidcore)
     if on then
         local r, g, b = Style.Accent()
+        if voidcore then r, g, b = 0.78, 0.55, 1 end
         tex:SetDesaturated(false)
         tex:SetVertexColor(r, g, b, 1)
     else
@@ -288,14 +296,24 @@ end
 
 ns.UI = { TextButton = TextButton, Check = Check, Tip = Tip, Dropdown = Dropdown, CloseMenu = CloseMenu,
     StatProfileDropdown = StatProfileDropdown, RefreshStatProfileButton = RefreshStatProfileButton,
-    IsMenuShown = function() return (menu and menu:IsShown()) and true or false end }
+    IsMenuShown = function() return (menu and menu:IsShown()) and true or false end,
+    -- row pools, for the test harness
+    Pools = { dungeonItems = dungeonItems, raidItems = raidItems, gearItems = gearItems } }
+
+-- Tooltips show the Voidcore roll while Shift is held: redraw the hovered
+-- row's tooltip when Shift changes.
+ns:RegisterEvent("MODIFIER_STATE_CHANGED", function(key)
+    if key ~= "LSHIFT" and key ~= "RSHIFT" then return end
+    local row = ns.hoveredTip
+    if row and row.tipFn and row:IsMouseOver() then row.tipFn(row) end
+end)
 
 -- Column header tabs shared by both list tabs: a full-width first tab plus
 -- fixed Drops and Wanted columns. defs = { { id, text, width|nil }, ... }
-local function ColumnHeader(page, defs, onSelect)
+local function ColumnHeader(page, defs, onSelect, top)
     local colHead = CreateFrame("Frame", nil, page)
-    colHead:SetPoint("TOPLEFT", 0, 0)
-    colHead:SetPoint("TOPRIGHT", -GUTTER, 0)
+    colHead:SetPoint("TOPLEFT", 0, -(top or 0))
+    colHead:SetPoint("TOPRIGHT", -GUTTER, -(top or 0))
     colHead:SetHeight(20)
     local prev
     for i = #defs, 1, -1 do
@@ -386,10 +404,10 @@ local function BuildToolbar()
     local keyLabel = Style.Text(bar, 11, 1, 1, 1, 0.53)
     keyLabel:SetPoint("RIGHT", keyMinus, "LEFT", -6, 0)
     keyLabel:SetText("Key")
-    bar.KeyText, bar.KeyPlus, bar.KeyMinus = keyText, keyPlus, keyMinus
+    bar.KeyText, bar.KeyPlus, bar.KeyMinus, bar.KeyBox, bar.KeyLabel = keyText, keyPlus, keyMinus, keyBox, keyLabel
     for _, b in ipairs({ keyPlus, keyMinus }) do
         Tip(b, "ANCHOR_BOTTOM", "Key level",
-            "Drops are judged at the end-of-dungeon item level of this key. One step past the last key that still raises it, the selector becomes Voidcore and judges the bonus roll (vault item level) instead.")
+            "Drops are judged at the end-of-dungeon item level of this key.")
     end
 
     local weights = StatProfileDropdown(bar, 176, 22)
@@ -410,18 +428,32 @@ local function BuildToolbar()
     bar.Info = info
 end
 
--------------------------------------------------------------------------------
--- Dungeons page
--------------------------------------------------------------------------------
-local function BuildDungeonsPage(page)
-    local colHead = ColumnHeader(page, {
-        { "name", "Dungeon", nil, "Click to sort by name. Click a dungeon to see its drops." },
-        { "upgrades", "Drops", COL_DROPS, "Spec-usable items that would upgrade a slot as an end-of-dungeon drop at the selected key. Click to sort." },
-        { "wanted", "Wanted", COL_WANTED, "Items from your wanted list that drop in this dungeon. Spend Voidcores where this is highest. Click to sort." },
-    }, function(mode) ns.db.sortMode = mode end)
-    page.ColHead = colHead
-    page.List, page.Content = ListPanel(page, colHead, 18)
+-- A row of small tabs, like the switches in Settings. defs = { { id, text, tip }, ... }
+local function TabStrip(parent, defs, w, onSelect)
+    local tabs = CreateFrame("Frame", nil, parent)
+    tabs:SetSize(#defs * w + (#defs - 1), 20)
+    local prev
+    for _, def in ipairs(defs) do
+        local tab = CreateFrame("Button", nil, tabs)
+        tab:SetSize(w, 20)
+        if prev then tab:SetPoint("LEFT", prev, "RIGHT", 1, 0) else tab:SetPoint("LEFT", 0, 0) end
+        tab.Text = Style.Text(tab, 11)
+        tab.Text:SetPoint("CENTER", 0, 0)
+        tab.Text:SetText(def[2])
+        tab.tabID = def[1]
+        tab:SetScript("OnClick", function()
+            Style.SelectTab(tabs, def[1])
+            onSelect(def[1])
+        end)
+        Style.Tab(tab)
+        if def[3] then Tip(tab, "ANCHOR_TOP", def[2], def[3]) end
+        prev = tab
+    end
+    return tabs
+end
 
+-- Status line and scan progress bar along the bottom of a list page.
+local function StatusLine(page)
     local status = Style.Text(page, 10, 1, 1, 1, 0.53)
     status:SetPoint("BOTTOMLEFT", 2, 2)
     status:SetPoint("BOTTOMRIGHT", -2, 2)
@@ -441,14 +473,74 @@ local function BuildDungeonsPage(page)
 end
 
 -------------------------------------------------------------------------------
--- Gear page
+-- Dungeons page
+-------------------------------------------------------------------------------
+local function BuildDungeonsPage(page)
+    local colHead = ColumnHeader(page, {
+        { "name", "Dungeon", nil, "Click to sort by name. Click a dungeon to see its drops." },
+        { "upgrades", "Drops", COL_DROPS, "Spec-usable items that would upgrade a slot as an end-of-dungeon drop at the selected key. Click to sort." },
+        { "wanted", "Wanted", COL_WANTED, "Items from your wanted list that drop in this dungeon; a purple star means a Voidcore target drops here. Click to sort." },
+    }, function(mode) ns.db.sortMode = mode end)
+    page.ColHead = colHead
+    page.List, page.Content = ListPanel(page, colHead, 18)
+    StatusLine(page)
+end
+
+-------------------------------------------------------------------------------
+-- Raid page: a difficulty strip, then boss rows
+-------------------------------------------------------------------------------
+local function BuildRaidPage(page)
+    local strip = CreateFrame("Frame", nil, page)
+    strip:SetPoint("TOPLEFT", 0, 0)
+    strip:SetPoint("TOPRIGHT", -GUTTER, 0)
+    strip:SetHeight(20)
+    local label = Style.Text(strip, 11, 1, 1, 1, 0.53)
+    label:SetPoint("LEFT", 4, 0)
+    label:SetText("Difficulty")
+    local defs = {}
+    for _, d in ipairs(ns.RAID_DIFFS) do
+        defs[#defs + 1] = { d.key, d.name, "Bosses are judged at this difficulty." }
+    end
+    strip.Tabs = TabStrip(strip, defs, 60, function(key) ns:SetRaidDifficulty(key) end)
+    strip.Tabs:SetPoint("RIGHT", 0, 0)
+    page.Strip = strip
+
+    local colHead = ColumnHeader(page, {
+        { "boss", "Boss", nil, "Click a boss to see its drops. Click here to sort by kill order." },
+        { "upgrades", "Drops", COL_DROPS, "Spec-usable items that would upgrade a slot as a drop at the selected difficulty. Click to sort." },
+        { "wanted", "Wanted", COL_WANTED, "Items from your wanted list this boss drops; a purple star means a Voidcore target. Click to sort." },
+    }, function(mode) ns.db.raidSort = mode end, STRIP_H)
+    page.ColHead = colHead
+    page.List, page.Content = ListPanel(page, colHead, 18)
+    StatusLine(page)
+end
+
+-------------------------------------------------------------------------------
+-- Gear page: a source strip (M+ / both / raid), then slot rows
 -------------------------------------------------------------------------------
 local function BuildGearPage(page)
+    local strip = CreateFrame("Frame", nil, page)
+    strip:SetPoint("TOPLEFT", 0, 0)
+    strip:SetPoint("TOPRIGHT", -GUTTER, 0)
+    strip:SetHeight(20)
+    local label = Style.Text(strip, 11, 1, 1, 1, 0.53)
+    label:SetPoint("LEFT", 4, 0)
+    label:SetText("Drops from")
+    strip.Tabs = TabStrip(strip, {
+        { "mplus", "M+", "Dungeon drops at the selected key." },
+        { "both", "Both", "Dungeon drops at the selected key and raid drops at the Raid tab's difficulty." },
+        { "raid", "Raid", "Raid drops at the Raid tab's difficulty." },
+    }, 50, function(key) ns.db.gearSource = key; ns:RefreshWindow() end)
+    strip.Tabs:SetPoint("LEFT", label, "RIGHT", 8, 0)
+    strip.Diff = Style.Text(strip, 10, 1, 1, 1, 0.53)
+    strip.Diff:SetPoint("LEFT", strip.Tabs, "RIGHT", 8, 0)
+    page.Strip = strip
+
     local colHead = ColumnHeader(page, {
-        { "slot", "Slot", nil, "Click a slot to compare every drop for it across dungeons. Click here to sort by slot." },
-        { "upgrades", "Drops", COL_DROPS, "Upgrade drops available for the slot at the selected key. Click to sort." },
+        { "slot", "Slot", nil, "Click a slot to compare every drop for it. Click here to sort by slot." },
+        { "upgrades", "Drops", COL_DROPS, "Upgrade drops available for the slot. Click to sort." },
         { "wanted", "Wanted", COL_WANTED, "Wanted items for the slot. Click to sort." },
-    }, function(mode) ns.db.gearSort = mode end)
+    }, function(mode) ns.db.gearSort = mode end, STRIP_H)
     page.ColHead = colHead
     page.List, page.Content = ListPanel(page, colHead, 18)
 
@@ -457,7 +549,7 @@ local function BuildGearPage(page)
     hint:SetPoint("BOTTOMRIGHT", -2, 2)
     hint:SetJustifyH("LEFT")
     hint:SetWordWrap(false)
-    hint:SetText("Drops are ordered by how well their stats fit you. Star the one you want. Right-click a slot: Auto / Want / Skip.")
+    hint:SetText("Star: want it.  Purple star: Voidcore it.  Right-click a slot: Auto / Want / Skip.")
     page.Hint = hint
 end
 
@@ -542,15 +634,16 @@ local function BuildFrame()
     end
     local listTop = TITLE_H + 6 + TOOLBAR_H
     BuildDungeonsPage(NewPage("dungeons", listTop))
+    BuildRaidPage(NewPage("raid", listTop))
     BuildGearPage(NewPage("gear", listTop))
     ns:BuildSettingsPage(NewPage("settings", TITLE_H + 6))
 
     -- tab row hanging under the frame, like the Group Finder's own tabs
     local tabs = CreateFrame("Frame", nil, frame)
     tabs:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", PAD, 1)
-    tabs:SetSize(3 * TAB_W + 2, TAB_H)
+    tabs:SetSize(4 * TAB_W + 3, TAB_H)
     frame.TabRow = tabs
-    for i, def in ipairs({ { "dungeons", "Dungeons" }, { "gear", "Gear" }, { "settings", "Settings" } }) do
+    for i, def in ipairs({ { "dungeons", "Dungeons" }, { "raid", "Raid" }, { "gear", "Gear" }, { "settings", "Settings" } }) do
         local tab = CreateFrame("Button", nil, tabs)
         tab:SetSize(TAB_W, TAB_H)
         tab:SetPoint("LEFT", (i - 1) * (TAB_W + 1), 0)
@@ -632,6 +725,11 @@ local function NewTopRow(content, onClick, onRightClick, onEnter)
     row.Wanted:SetJustifyH("LEFT")
     row.WantIcon = StarTexture(row, 12)
     row.WantIcon:SetPoint("RIGHT", row.Wanted, "LEFT", -3, 0)
+    -- a Voidcore target drops here
+    row.VCIcon = StarTexture(row, 11)
+    row.VCIcon:SetPoint("RIGHT", -1, 0)
+    SetStar(row.VCIcon, true, true)
+    row.VCIcon:Hide()
     row.Count = Style.Text(row, 12)
     row.Count:SetPoint("RIGHT", -COL_WANTED - 1, 0)
     row.Count:SetWidth(COL_DROPS)
@@ -649,16 +747,35 @@ local function NewTopRow(content, onClick, onRightClick, onEnter)
             onClick(self)
         end
     end)
-    row:SetScript("OnEnter", onEnter)
-    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    row.tipFn = onEnter
+    row:SetScript("OnEnter", function(self) ns.hoveredTip = self; onEnter(self) end)
+    row:SetScript("OnLeave", function() ns.hoveredTip = nil; GameTooltip:Hide() end)
     return row
 end
 
-local function SetRowCounts(row, count, wanted, scanned, accent)
+-- Raid name above its bosses when the season has more than one raid.
+local function NewSectionRow(content)
+    local f = CreateFrame("Frame", nil, content)
+    f:SetHeight(SECTION_H)
+    f.Text = Style.Text(f, 11, 1, 1, 1, 0.6)
+    f.Text:SetPoint("LEFT", 6, 0)
+    f.Text:SetPoint("RIGHT", -6, 0)
+    f.Text:SetJustifyH("LEFT")
+    f.Text:SetWordWrap(false)
+    f.Line = f:CreateTexture(nil, "ARTWORK")
+    f.Line:SetHeight(1)
+    f.Line:SetPoint("BOTTOMLEFT", 4, 2)
+    f.Line:SetPoint("BOTTOMRIGHT", -4, 2)
+    f.Line:SetColorTexture(1, 1, 1, 0.08)
+    return f
+end
+
+local function SetRowCounts(row, count, wanted, scanned, accent, voidcore)
     if not scanned then
         row.Count:SetText("|cff888888...|r")
         row.Wanted:SetText("")
         row.WantIcon:Hide()
+        row.VCIcon:Hide()
         return
     end
     row.Count:SetText(count)
@@ -670,6 +787,7 @@ local function SetRowCounts(row, count, wanted, scanned, accent)
         row.Wanted:SetText("|cff444444-|r")
         row.WantIcon:Hide()
     end
+    row.VCIcon:SetShown((voidcore or 0) > 0)
 end
 
 local function RowBackground(row, index, expanded, highlighted)
@@ -697,6 +815,7 @@ local function NewItemRow(content, where)
     it.Icon:SetSize(ITEM_H - 4, ITEM_H - 4)
     it.Icon:SetPoint("LEFT", ROW_H + 6, 0)
     Style.SquareIcon(it.Icon, it)
+    -- wanted star
     it.Star = CreateFrame("Button", nil, it)
     it.Star:SetSize(18, 18)
     it.Star:SetPoint("RIGHT", -4, 0)
@@ -706,19 +825,45 @@ local function NewItemRow(content, where)
         local parent = self:GetParent()
         local id = parent.eval and parent.eval.item.itemID
         if not id then return end
-        ns:SetItemState(id, ns:GetItemState(id) == "want" and nil or "want")
+        -- (not `x and nil or "want"`: that can never yield nil)
+        if ns:GetItemState(id) == "want" then
+            ns:SetItemState(id, nil)
+        else
+            ns:SetItemState(id, "want")
+        end
     end)
     it.Star:SetScript("OnEnter", function(self)
         local parent = self:GetParent()
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         local wanted = parent.eval and ns:GetItemState(parent.eval.item.itemID) == "want"
         GameTooltip:AddLine(wanted and "On your wanted list" or "Add to wanted list")
-        GameTooltip:AddLine(wanted and "Click to remove it." or "Wanted items count for their dungeon and drive the Voidcore advice. They leave the list by themselves once you have the item.", 0.8, 0.8, 0.8, true)
+        GameTooltip:AddLine(wanted and "Click to remove it." or "Wanted items count for their dungeon or boss. They leave the list by themselves once you have the item.", 0.8, 0.8, 0.8, true)
         GameTooltip:Show()
     end)
     it.Star:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    -- Voidcore star: what you would spend a Nebulous Voidcore on
+    it.VC = CreateFrame("Button", nil, it)
+    it.VC:SetSize(18, 18)
+    it.VC:SetPoint("RIGHT", it.Star, "LEFT", -1, 0)
+    it.VC.Icon = StarTexture(it.VC, 14)
+    it.VC.Icon:SetPoint("CENTER", 0, 0)
+    it.VC:SetScript("OnClick", function(self)
+        local parent = self:GetParent()
+        local id = parent.eval and parent.eval.item.itemID
+        if not id then return end
+        ns:SetVoidcoreTarget(id, not ns:IsVoidcoreTarget(id))
+    end)
+    it.VC:SetScript("OnEnter", function(self)
+        local parent = self:GetParent()
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        local on = parent.eval and ns:IsVoidcoreTarget(parent.eval.item.itemID)
+        GameTooltip:AddLine(on and (ns.VC_HEX .. "Voidcore target|r") or "Voidcore target")
+        GameTooltip:AddLine(on and "Click to unmark it." or "Click: this is what you would spend a Nebulous Voidcore on.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    it.VC:SetScript("OnLeave", function() GameTooltip:Hide() end)
     it.Gain = Style.Text(it, 10)
-    it.Gain:SetPoint("RIGHT", it.Star, "LEFT", -4, 0)
+    it.Gain:SetPoint("RIGHT", it.VC, "LEFT", -4, 0)
     it.Gain:SetWidth(56)
     it.Gain:SetJustifyH("RIGHT")
     it.Stats = Style.Text(it, 10)
@@ -746,8 +891,9 @@ local function NewItemRow(content, where)
             DressUpItemLink(self.eval.item.link)
         end
     end)
-    it:SetScript("OnEnter", function(self) if self.eval then ns:ShowItemTooltip(self) end end)
-    it:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    it.tipFn = function(self) if self.eval then ns:ShowItemTooltip(self) end end
+    it:SetScript("OnEnter", function(self) ns.hoveredTip = self; self.tipFn(self) end)
+    it:SetScript("OnLeave", function() ns.hoveredTip = nil; GameTooltip:Hide() end)
     return it
 end
 
@@ -762,10 +908,10 @@ end
 -- Fill a drop row. `whereText` replaces the slot text when given.
 local function FillItemRow(it, eval, whereText)
     local self = ns
-    local db = self.db
     local counts = self:CountsAsUpgrade(eval)
-    local vcCounts = self:CountsAsUpgrade(eval, "voidcore")
     local state = self:GetItemState(eval.item.itemID)
+    local target = self:IsVoidcoreTarget(eval.item.itemID)
+    local lit = counts or state == "want" or target
     it.eval = eval
     it.Icon:SetTexture(eval.item.icon or 134400)
     if whereText then
@@ -775,33 +921,32 @@ local function FillItemRow(it, eval, whereText)
         it.Where:SetText(slot and (self.SLOT_SHORT[slot.id] or slot.key) or (eval.item.slotText or ""))
     end
     local name = ItemName(eval.item)
-    if counts or vcCounts or state == "want" then
+    if lit then
         it.Name:SetText(QualityHex(eval.item) .. name .. "|r")
         it.Name:SetAlpha(1)
     else
         it.Name:SetText(name)
         it.Name:SetAlpha(0.45)
     end
-    local vcTag = (vcCounts and not counts) and (ns.VC_HEX .. "VC|r ") or ""
     if state == "exclude" then
         it.Gain:SetText("|cffff5555excluded|r")
     elseif eval.class == TRACK and eval.gain then
-        it.Gain:SetText(string.format("%s%s%+d|r|cff888888/%+d|r", vcTag, Hex(TRACK), eval.gain, eval.potentialGain or 0))
+        it.Gain:SetText(string.format("%s%+d|r|cff888888/%+d|r", Hex(TRACK), eval.gain, eval.potentialGain or 0))
     elseif eval.class == ILVL and eval.gain then
-        it.Gain:SetText(string.format("%s%s%+d|r", vcTag, Hex(ILVL), eval.gain))
+        it.Gain:SetText(string.format("%s%+d|r", Hex(ILVL), eval.gain))
     elseif eval.class == WANT and eval.gain then
         it.Gain:SetText(string.format("%s%+d|r", eval.gain > 0 and Hex(ILVL) or "|cff777777", eval.gain))
-    elseif vcCounts and eval.voidcore then
-        it.Gain:SetText(string.format("%s%+d|r %s", ns.VC_HEX, eval.voidcore.potentialGain or eval.voidcore.gain or 0, vcTag))
     elseif eval.gain then
         it.Gain:SetText(string.format("|cff777777%+d|r", eval.gain))
     else
         it.Gain:SetText("")
     end
-    it.Icon:SetDesaturated(not (counts or vcCounts or state == "want"))
+    it.Icon:SetDesaturated(not lit)
     it.Stats:SetText(self:StatText(eval.stats, eval.fit))
     SetStar(it.Star.Icon, state == "want")
     it.Star:Show()
+    SetStar(it.VC.Icon, target, true)
+    it.VC:Show()
 end
 
 local function FillNoteRow(it, text)
@@ -813,6 +958,7 @@ local function FillNoteRow(it, text)
     it.Gain:SetText("")
     it.Stats:SetText("")
     it.Star:Hide()
+    it.VC:Hide()
 end
 
 -------------------------------------------------------------------------------
@@ -835,18 +981,31 @@ function ns:ShowSlotTooltip(btn)
             GameTooltip:AddLine(" ")
             GameTooltip:AddLine(Style.AccentHex() .. "Wanted|r")
             for _, w in ipairs(summary.wanted) do
-                GameTooltip:AddLine(string.format("  %s  |cff888888%s|r", w.eval.item.link or ItemName(w.eval.item), w.dungeon.name), 1, 1, 1)
+                GameTooltip:AddLine(string.format("  %s  |cff888888%s|r", w.eval.item.link or ItemName(w.eval.item), w.source or "?"), 1, 1, 1)
+            end
+        end
+        if #summary.voidcore > 0 then
+            if IsShiftKeyDown and IsShiftKeyDown() then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine(ns.VC_HEX .. "Voidcore targets|r")
+                for _, w in ipairs(summary.voidcore) do
+                    GameTooltip:AddLine(string.format("  %s  |cff888888%s|r", w.eval.item.link or ItemName(w.eval.item), w.source or "?"), 1, 1, 1)
+                end
+            else
+                GameTooltip:AddLine("|cff888888Shift: Voidcore targets|r")
             end
         end
         GameTooltip:AddLine(" ")
         if summary.count > 0 then
-            GameTooltip:AddLine(string.format("%s%d upgrade drop(s) at the selected key|r", Hex(summary.best), summary.count))
-            for mapID, n in pairs(summary.dungeons) do
-                local d = self.dungeonByMapID[mapID]
-                if d then GameTooltip:AddLine(string.format("  %s: %d", d.name, n), 0.8, 0.8, 0.8) end
+            GameTooltip:AddLine(string.format("%s%d upgrade drop(s)|r", Hex(summary.best), summary.count))
+            local names = {}
+            for _, src in pairs(summary.sources) do names[#names + 1] = src end
+            table.sort(names, function(a, b) return a.name < b.name end)
+            for _, src in ipairs(names) do
+                GameTooltip:AddLine(string.format("  %s: %d", src.name, src.n), 0.8, 0.8, 0.8)
             end
         else
-            GameTooltip:AddLine("No upgrade drops at the selected key", 0.6, 0.6, 0.6)
+            GameTooltip:AddLine("No upgrade drops", 0.6, 0.6, 0.6)
         end
     end
     local state = self:GetSlotState(btn.slotID)
@@ -857,19 +1016,22 @@ function ns:ShowSlotTooltip(btn)
     GameTooltip:Show()
 end
 
+-- Dungeon or boss row.
 function ns:ShowDungeonTooltip(row)
     local r = row.result
     if not r then return end
     GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-    GameTooltip:AddLine(r.dungeon.name)
+    GameTooltip:AddLine(r.sourceName or "?")
+    if r.raid then GameTooltip:AddLine(r.raid.name, 0.7, 0.7, 0.7) end
     if not r.scanned then
-        GameTooltip:AddLine("Loot table not scanned yet.", 0.7, 0.7, 0.7)
+        GameTooltip:AddLine(r.raid and "No loot listed for this difficulty." or "Loot table not scanned yet.", 0.7, 0.7, 0.7)
     else
-        local ctx = self.dropCtx
+        local ctx = r.ctx or self.dropCtx
         GameTooltip:AddDoubleLine("Usable items for your spec", tostring(r.total), 0.9, 0.9, 0.9, 1, 1, 1)
         if ctx and ctx.ilvl then
             GameTooltip:AddLine(" ")
-            GameTooltip:AddLine(string.format("End of dungeon (+%d): %d %s", ctx.key, ctx.ilvl, TrackText(ctx.track, ctx.step)), 1, 0.82, 0)
+            local label = ctx.raid and ((ctx.difficultyName or "Raid") .. " drop") or string.format("End of dungeon (+%d)", ctx.key or 0)
+            GameTooltip:AddLine(string.format("%s: %d %s", label, ctx.ilvl, TrackText(ctx.track, ctx.step)), 1, 0.82, 0)
             GameTooltip:AddDoubleLine("  Upgrade drops", string.format("%s%d|r", Hex(r.upgrades > 0 and TRACK or NONE), r.upgrades), 0.9, 0.9, 0.9)
             GameTooltip:AddDoubleLine("  Slots covered", tostring(r.slotCount), 0.9, 0.9, 0.9, 1, 1, 1)
         end
@@ -879,12 +1041,27 @@ function ns:ShowDungeonTooltip(row)
             for _, eval in ipairs(r.wantedItems) do
                 GameTooltip:AddLine("  " .. (eval.item.link or ItemName(eval.item)), 1, 1, 1)
             end
-            local vc = ctx and ctx.voidcore
-            GameTooltip:AddLine(string.format("A Nebulous Voidcore here is one extra roll on these%s.",
-                vc and vc.ilvl and string.format(" at %d %s", vc.ilvl, TrackText(vc.track, vc.step)) or ""), 0.6, 0.6, 0.6, true)
         else
             GameTooltip:AddLine("Nothing from your wanted list drops here.", 0.6, 0.6, 0.6)
-            GameTooltip:AddLine("Click the dungeon and star the drops you are after.", 0.6, 0.6, 0.6, true)
+            GameTooltip:AddLine(string.format("Click the %s and star the drops you are after.", r.raid and "boss" or "dungeon"), 0.6, 0.6, 0.6, true)
+        end
+        -- the Voidcore roll, on request
+        if IsShiftKeyDown and IsShiftKeyDown() then
+            GameTooltip:AddLine(" ")
+            local vc = ctx and ctx.voidcore
+            if vc and vc.ilvl then
+                GameTooltip:AddLine(string.format("%sVoidcore roll here:|r %d %s", ns.VC_HEX, vc.ilvl, TrackText(vc.track, vc.step)), 1, 1, 1)
+            end
+            if r.voidcore > 0 then
+                GameTooltip:AddLine(ns.VC_HEX .. "Voidcore targets here|r")
+                for _, eval in ipairs(r.voidcoreItems) do
+                    GameTooltip:AddLine("  " .. (eval.item.link or ItemName(eval.item)), 1, 1, 1)
+                end
+            else
+                GameTooltip:AddLine("No Voidcore targets here.", 0.6, 0.6, 0.6)
+            end
+        else
+            GameTooltip:AddLine("|cff888888Shift: Voidcore roll|r")
         end
     end
     GameTooltip:Show()
@@ -894,7 +1071,8 @@ function ns:ShowItemTooltip(btn)
     local eval = btn.eval
     if not eval then return end
     local item = eval.item
-    local ctx = self.dropCtx
+    local ctx = btn.ctx or self.dropCtx
+    local shift = IsShiftKeyDown and IsShiftKeyDown()
     GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
     local link, kind = self:LinkForContext(item, ctx or {})
     if link then
@@ -908,8 +1086,8 @@ function ns:ShowItemTooltip(btn)
     end
     if ctx and ctx.ilvl then
         if kind == "exact" then
-            GameTooltip:AddLine(ctx.isVoidcore and (ns.VC_HEX .. "Shown as a Voidcore roll from a +" .. ctx.key .. "|r")
-                or string.format("|cff888888Shown as it drops from a +%d|r", ctx.key))
+            GameTooltip:AddLine(ctx.raid and string.format("|cff888888Shown as it drops on %s|r", ctx.difficultyName or "this difficulty")
+                or string.format("|cff888888Shown as it drops from a +%d|r", ctx.key or 0))
         else
             GameTooltip:AddLine("|cff888888Base item shown; the drop's own level is listed below|r")
         end
@@ -935,13 +1113,6 @@ function ns:ShowItemTooltip(btn)
         end
         GameTooltip:AddLine(s, 1, 1, 1, true)
     end
-    if eval.value then
-        local scale = ctx and ctx.statWeights
-        ValueLine(string.format("Weighted value (%s)", scale and scale.name or "Pawn"), eval)
-        if eval.voidcore and eval.voidcore.value and not (ctx and ctx.isVoidcore) then
-            ValueLine(ns.VC_HEX .. "Voidcore roll value|r", eval.voidcore)
-        end
-    end
     local function Verdict(r)
         local label = ns.UPGRADE_LABEL[r.class]
         local extra = r.reason and (" - " .. r.reason) or ""
@@ -951,42 +1122,50 @@ function ns:ShowItemTooltip(btn)
         end
         return s
     end
-    if ctx and ctx.ilvl then
-        if ctx.isVoidcore then
-            GameTooltip:AddLine(string.format("%sVoidcore roll|r (+%d): |cffffffff%d|r %s%s", ns.VC_HEX, ctx.key, ctx.ilvl,
-                TrackText(ctx.track, ctx.step),
-                (ctx.potential and ctx.potential > ctx.ilvl) and string.format(" (up to %d)", ctx.potential) or ""), 1, 1, 1, true)
-        else
-            GameTooltip:AddLine(string.format("End of dungeon +%d: |cffffffff%d|r %s%s", ctx.key, ctx.ilvl,
-                TrackText(ctx.track, ctx.step),
-                (ctx.potential and ctx.potential > ctx.ilvl) and string.format(" (up to %d)", ctx.potential) or ""), 1, 0.82, 0, true)
-        end
-        GameTooltip:AddLine("  " .. Verdict(eval), 1, 1, 1, true)
-    else
-        GameTooltip:AddLine("  " .. Verdict(eval), 1, 1, 1, true)
+    local scale = ctx and ctx.statWeights
+    if eval.value then
+        ValueLine(string.format("Weighted value (%s)", scale and scale.name or "Pawn"), eval)
     end
+    if ctx and ctx.ilvl then
+        local label = ctx.raid and ((ctx.difficultyName or "Raid") .. " drop") or string.format("End of dungeon +%d", ctx.key or 0)
+        GameTooltip:AddLine(string.format("%s: |cffffffff%d|r %s%s", label, ctx.ilvl,
+            TrackText(ctx.track, ctx.step),
+            (ctx.potential and ctx.potential > ctx.ilvl) and string.format(" (up to %d)", ctx.potential) or ""), 1, 0.82, 0, true)
+    end
+    GameTooltip:AddLine("  " .. Verdict(eval), 1, 1, 1, true)
+    -- the Voidcore roll, on request
     local vc = ctx and ctx.voidcore
-    if vc and vc.ilvl and eval.voidcore and not ctx.isVoidcore then
-        GameTooltip:AddLine(string.format("%sVoidcore roll|r: |cffffffff%d|r %s%s", ns.VC_HEX, vc.ilvl,
-            TrackText(vc.track, vc.step),
-            (vc.potential and vc.potential > vc.ilvl) and string.format(" (up to %d)", vc.potential) or ""), 1, 1, 1, true)
-        GameTooltip:AddLine("  " .. Verdict(eval.voidcore), 1, 1, 1, true)
+    if vc and vc.ilvl and eval.voidcore then
+        if shift then
+            GameTooltip:AddLine(string.format("%sVoidcore roll|r: |cffffffff%d|r %s%s", ns.VC_HEX, vc.ilvl,
+                TrackText(vc.track, vc.step),
+                (vc.potential and vc.potential > vc.ilvl) and string.format(" (up to %d)", vc.potential) or ""), 1, 1, 1, true)
+            GameTooltip:AddLine("  " .. Verdict(eval.voidcore), 1, 1, 1, true)
+            if eval.voidcore.value then ValueLine("  " .. ns.VC_HEX .. "Roll value|r", eval.voidcore) end
+        else
+            GameTooltip:AddLine("|cff888888Shift: Voidcore roll|r")
+        end
     end
     local state = self:GetItemState(item.itemID)
+    local target = self:IsVoidcoreTarget(item.itemID)
     GameTooltip:AddLine(" ")
-    if state == "want" then
-        GameTooltip:AddLine(Style.AccentHex() .. "On your wanted list|r  |cff888888(click the star to remove)|r")
-    elseif state == "exclude" then
+    if state == "want" then GameTooltip:AddLine(Style.AccentHex() .. "On your wanted list|r") end
+    if target then GameTooltip:AddLine(ns.VC_HEX .. "Voidcore target|r") end
+    if state == "exclude" then
         GameTooltip:AddLine("|cffff5555Excluded|r  |cff888888(right-click to include again)|r")
-    else
-        GameTooltip:AddLine("|cff888888Star: add to wanted list.  Right-click: exclude (e.g. already rolled it with a Voidcore).|r", 1, 1, 1, true)
+    elseif not state and not target then
+        GameTooltip:AddLine("|cff888888Star: want it.  Purple star: Voidcore it.  Right-click: exclude.|r", 1, 1, 1, true)
     end
     GameTooltip:Show()
 end
 
 function ns:CycleItemState(itemID)
     local cur = self:GetItemState(itemID)
-    self:SetItemState(itemID, cur == "exclude" and nil or "exclude")
+    if cur == "exclude" then
+        self:SetItemState(itemID, nil)
+    else
+        self:SetItemState(itemID, "exclude")
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -1043,25 +1222,42 @@ end
 
 local function InfoText(ctx)
     local parts = {}
-    if ctx.isVoidcore then
-        if ctx.ilvl then
-            parts[#parts + 1] = string.format("%sVoidcore roll (+%d):|r %d %s", ns.VC_HEX, ctx.key, ctx.ilvl, TrackText(ctx.track, ctx.step))
-        else
-            parts[#parts + 1] = "|cffff5555Voidcore item level unknown|r"
-        end
+    if ctx.ilvl then
+        parts[#parts + 1] = string.format("Drops at +%d: |cffffffff%d|r %s", ctx.key or 0, ctx.ilvl, TrackText(ctx.track, ctx.step))
     else
-        if ctx.ilvl then
-            parts[#parts + 1] = string.format("Drops at +%d: |cffffffff%d|r %s", ctx.key, ctx.ilvl, TrackText(ctx.track, ctx.step))
-        else
-            parts[#parts + 1] = "|cffff5555Drop item level unknown|r"
-        end
-        local vc = ctx.voidcore
-        if vc and vc.ilvl then
-            parts[#parts + 1] = string.format("%sVoidcore:|r |cffffffff%d|r %s", ns.VC_HEX, vc.ilvl, TrackText(vc.track, vc.step))
-        end
+        parts[#parts + 1] = "|cffff5555Drop item level unknown|r"
+    end
+    local vc = ctx.voidcore
+    if vc and vc.ilvl then
+        parts[#parts + 1] = string.format("%sVoidcore:|r |cffffffff%d|r %s", ns.VC_HEX, vc.ilvl, TrackText(vc.track, vc.step))
     end
     if ctx.source == "fallback" then parts[#parts + 1] = "|cffff9900season table|r" end
     return table.concat(parts, "  |cff555555·|r  ")
+end
+
+local function RaidInfoText(ctx)
+    local parts = {}
+    if ctx.ilvl then
+        parts[#parts + 1] = string.format("%s drops: |cffffffff%d|r %s", ctx.difficultyName or "Raid", ctx.ilvl, TrackText(ctx.track, ctx.step))
+    else
+        parts[#parts + 1] = "|cffff5555Drop item level unknown|r"
+    end
+    local vc = ctx.voidcore
+    if vc and vc.ilvl then
+        parts[#parts + 1] = string.format("%sVoidcore:|r |cffffffff%d|r %s", ns.VC_HEX, vc.ilvl, TrackText(vc.track, vc.step))
+    end
+    return table.concat(parts, "  |cff555555·|r  ")
+end
+
+local function RefreshStatusLine(page)
+    local self = ns
+    page.Status:SetText(StatusText())
+    if self.scanProgress and self.scanProgress.total and self.scanProgress.total > 0 then
+        page.Progress:SetValue(self.scanProgress.index / self.scanProgress.total)
+        page.Progress:Show()
+    else
+        page.Progress:Hide()
+    end
 end
 
 local function RefreshToolbar()
@@ -1071,15 +1267,62 @@ local function RefreshToolbar()
     local specName, specIcon = self:SpecName(specID)
     bar.SpecButton.Icon:SetTexture(specIcon or 134400)
     bar.SpecButton.Text:SetText(self.cdb.evalSpecID and specName or (specName .. " |cff888888(loot spec)|r"))
+    -- the key stepper is a Mythic+ thing; the Raid tab has its difficulty strip
+    local raidTab = frame.page == "raid"
+    for _, w in ipairs({ bar.KeyBox, bar.KeyPlus, bar.KeyMinus, bar.KeyLabel }) do w:SetShown(not raidTab) end
     bar.KeyText:SetText(self:TargetLabel())
-    bar.KeyPlus:SetEnabled(not self.db.voidcoreMode)
+    bar.KeyPlus:SetEnabled((self.db.targetKey or 10) < (self:MaxUsefulKey() or 10))
     RefreshStatProfileButton(bar.WeightsButton)
     local order, source = self:GetStatPriority()
     bar.Prio:SetText(order and (self:StatPriorityText(order) .. (source == "manual" and " |cff888888(manual order)|r" or ""))
         or "|cff888888no stat priority yet|r")
-    local ctx = self.dropCtx or self:GetDropContext()
-    bar.Info:SetText(InfoText(ctx))
+    if raidTab then
+        bar.Info:SetText(RaidInfoText(self:GetRaidContext(self:GetRaidDifficulty())))
+    else
+        local ctx = self.dropCtx or self:GetDropContext()
+        bar.Info:SetText(InfoText(ctx))
+    end
 end
+
+-------------------------------------------------------------------------------
+-- Frozen order. Starring or excluding a drop changes where it sorts, but a
+-- list that is open must not jump around under the cursor: the order of the
+-- rows and of the open list is captured when a row is expanded and kept
+-- until that row is collapsed, another one opens, or the sort changes.
+-------------------------------------------------------------------------------
+local frozen = {}
+
+-- `key` names the expansion (page + id); nil when nothing is open.
+local function Freeze(key, sort)
+    if key == nil or frozen.key ~= key or frozen.sort ~= sort then
+        frozen = { key = key, sort = sort }
+    end
+end
+
+-- Returns `list` in the order remembered under `slot`, new entries after the
+-- remembered ones; remembers the current order when there is none yet.
+local function KeepOrder(slot, list, keyOf)
+    local order = frozen[slot]
+    if not order then
+        order = {}
+        for i, e in ipairs(list) do order[i] = keyOf(e) end
+        frozen[slot] = order
+        return list
+    end
+    local byKey, out, seen = {}, {}, {}
+    for _, e in ipairs(list) do byKey[keyOf(e)] = e end
+    for _, k in ipairs(order) do
+        local e = byKey[k]
+        if e and not seen[k] then out[#out + 1] = e; seen[k] = true end
+    end
+    for _, e in ipairs(list) do
+        local k = keyOf(e)
+        if not seen[k] then out[#out + 1] = e; seen[k] = true end
+    end
+    return out
+end
+
+local function ItemKey(eval) return eval.item.itemID end
 
 local function RefreshDungeons(page)
     local self = ns
@@ -1088,12 +1331,20 @@ local function RefreshDungeons(page)
     if sortMode ~= "wanted" and sortMode ~= "name" then sortMode = "upgrades" end
     if page.ColHead.selectedTabID ~= sortMode then Style.SelectTab(page.ColHead, sortMode) end
 
+    local results = self.results or {}
+    if self.uiExpandedMapID then
+        Freeze("dungeons:" .. self.uiExpandedMapID, sortMode)
+        results = KeepOrder("top", results, function(r) return r.dungeon.challengeMapID end)
+    elseif frame.page == "dungeons" then
+        Freeze(nil)
+    end
+
     local y = 0
     local rowIndex, itemIndex = 0, 0
     local content = page.Content
     local width = content:GetWidth()
     local accent = Style.AccentHex()
-    for _, r in ipairs(self.results or {}) do
+    for _, r in ipairs(results) do
         local show = not (db.hideEmptyDungeons and r.scanned and r.upgrades == 0 and r.wanted == 0)
         if show then
             rowIndex = rowIndex + 1
@@ -1115,14 +1366,14 @@ local function RefreshDungeons(page)
             local expanded = self.uiExpandedMapID == row.mapID
             row.Arrow:SetRotation(expanded and 0 or math.rad(90))
             SetRowCounts(row, string.format("%s%d|r", Hex(r.upgrades > 0 and (r.trackUpgrades > 0 and TRACK or ILVL) or NONE), r.upgrades),
-                r.wanted, r.scanned, accent)
+                r.wanted, r.scanned, accent, r.voidcore)
             RowBackground(row, rowIndex, expanded, self.highlightMapID == row.mapID)
             y = y + ROW_H + 1
             if expanded and r.scanned then
                 local shown = 0
-                for _, eval in ipairs(r.items) do
+                for _, eval in ipairs(KeepOrder("items", r.items, ItemKey)) do
                     local state = self:GetItemState(eval.item.itemID)
-                    if self:CountsAsUpgrade(eval) or self:CountsAsUpgrade(eval, "voidcore") or state == "want" or not db.hideNonUpgrades then
+                    if self:CountsAsUpgrade(eval) or state == "want" or self:IsVoidcoreTarget(eval.item.itemID) or not db.hideNonUpgrades then
                         shown = shown + 1
                         itemIndex = itemIndex + 1
                         local it = Acquire(dungeonItems, itemIndex, function() return NewItemRow(content, false) end)
@@ -1150,14 +1401,117 @@ local function RefreshDungeons(page)
     for i = rowIndex + 1, #dungeonRows do dungeonRows[i]:Hide() end
     for i = itemIndex + 1, #dungeonItems do dungeonItems[i]:Hide() end
     content:SetHeight(math.max(y, 1))
+    RefreshStatusLine(page)
+end
 
-    page.Status:SetText(StatusText())
-    if self.scanProgress and self.scanProgress.total and self.scanProgress.total > 0 then
-        page.Progress:SetValue(self.scanProgress.index / self.scanProgress.total)
-        page.Progress:Show()
+local function RefreshRaid(page)
+    local self = ns
+    local db = self.db
+    local sortMode = db.raidSort or "boss"
+    if sortMode ~= "upgrades" and sortMode ~= "wanted" then sortMode = "boss" end
+    if page.ColHead.selectedTabID ~= sortMode then Style.SelectTab(page.ColHead, sortMode) end
+    local diff = self:GetRaidDifficulty()
+    if page.Strip.Tabs.selectedTabID ~= diff then Style.SelectTab(page.Strip.Tabs, diff) end
+
+    local y = 0
+    local rowIndex, itemIndex, headIndex = 0, 0, 0
+    local content = page.Content
+    local width = content:GetWidth()
+    local accent = Style.AccentHex()
+    local groups = self.raidResults or {}
+    if self.uiExpandedEncounterID then
+        Freeze("raid:" .. self.uiExpandedEncounterID, sortMode)
     else
-        page.Progress:Hide()
+        Freeze(nil)
     end
+    local function Note(text)
+        itemIndex = itemIndex + 1
+        local it = Acquire(raidItems, itemIndex, function() return NewItemRow(content, false) end)
+        it:ClearAllPoints()
+        it:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+        it:SetWidth(width)
+        FillNoteRow(it, text)
+        y = y + ITEM_H
+    end
+    for _, group in ipairs(groups) do
+        if #groups > 1 then
+            headIndex = headIndex + 1
+            local h = Acquire(raidHeaders, headIndex, function() return NewSectionRow(content) end)
+            h:ClearAllPoints()
+            h:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+            h:SetWidth(width)
+            h.Text:SetText(group.raid.name)
+            y = y + SECTION_H
+        end
+        local bosses = group.bosses
+        if self.uiExpandedEncounterID then
+            bosses = KeepOrder("top:" .. tostring(group.raid.instanceID), bosses, function(r) return r.boss.encounterID end)
+        end
+        for _, r in ipairs(bosses) do
+            local show = not (db.hideEmptyDungeons and r.scanned and r.upgrades == 0 and r.wanted == 0)
+            if show then
+                rowIndex = rowIndex + 1
+                local row = Acquire(raidRows, rowIndex, function()
+                    return NewTopRow(content, function(self2)
+                        ns.uiExpandedEncounterID = (ns.uiExpandedEncounterID ~= self2.encounterID) and self2.encounterID or nil
+                        ns:RefreshWindow()
+                    end, nil, function(self2) ns:ShowDungeonTooltip(self2) end)
+                end)
+                row.result = r
+                row.encounterID = r.boss.encounterID
+                row:ClearAllPoints()
+                row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+                row:SetWidth(width)
+                row.Icon:SetTexture(r.boss.portrait or 134400)
+                row.Icon:SetDesaturated(false)
+                row.Border:SetColorTexture(0, 0, 0, 1)
+                row.Name:SetText(r.boss.name)
+                local expanded = self.uiExpandedEncounterID == row.encounterID
+                row.Arrow:SetRotation(expanded and 0 or math.rad(90))
+                if r.scanned then
+                    SetRowCounts(row, string.format("%s%d|r", Hex(r.upgrades > 0 and (r.trackUpgrades > 0 and TRACK or ILVL) or NONE), r.upgrades),
+                        r.wanted, true, accent, r.voidcore)
+                else
+                    SetRowCounts(row, "|cff444444-|r", 0, true, accent, 0)
+                end
+                RowBackground(row, rowIndex, expanded, false)
+                y = y + ROW_H + 1
+                if expanded then
+                    local diffName = r.ctx and r.ctx.difficultyName or "this difficulty"
+                    if not r.scanned then
+                        Note("No loot listed for " .. diffName .. ".")
+                    else
+                        local shown = 0
+                        for _, eval in ipairs(KeepOrder("items", r.items, ItemKey)) do
+                            local state = self:GetItemState(eval.item.itemID)
+                            if self:CountsAsUpgrade(eval) or state == "want" or self:IsVoidcoreTarget(eval.item.itemID) or not db.hideNonUpgrades then
+                                shown = shown + 1
+                                itemIndex = itemIndex + 1
+                                local it = Acquire(raidItems, itemIndex, function() return NewItemRow(content, false) end)
+                                it:ClearAllPoints()
+                                it:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+                                it:SetWidth(width)
+                                it.dungeonName = nil
+                                it.ctx = r.ctx
+                                FillItemRow(it, eval)
+                                y = y + ITEM_H
+                            end
+                        end
+                        if shown == 0 then Note("No upgrades here on " .. diffName .. ".") end
+                    end
+                    y = y + 4
+                end
+            end
+        end
+    end
+    if #groups == 0 then
+        Note(self.loot and "No raids found in the journal for this season." or "Loot tables not scanned yet.")
+    end
+    for i = rowIndex + 1, #raidRows do raidRows[i]:Hide() end
+    for i = itemIndex + 1, #raidItems do raidItems[i]:Hide() end
+    for i = headIndex + 1, #raidHeaders do raidHeaders[i]:Hide() end
+    content:SetHeight(math.max(y, 1))
+    RefreshStatusLine(page)
 end
 
 -- Drops for one slot from every dungeon, best stat fit first. Excluded items
@@ -1174,15 +1528,15 @@ local function CompareDrops(a, b)
     return ItemName(ea.item) < ItemName(eb.item)
 end
 
--- [slotID] = { { eval, dungeon }, ... } sorted
+-- [slotID] = { { eval, source, ctx }, ... } sorted, from what the Gear tab lists
 local function DropsBySlot()
     local buckets = {}
-    for _, r in ipairs(ns.results or {}) do
+    for _, r in ipairs(ns:GearResults()) do
         if r.scanned then
             for _, eval in ipairs(r.items) do
                 if eval.slotID then
                     buckets[eval.slotID] = buckets[eval.slotID] or {}
-                    table.insert(buckets[eval.slotID], { eval = eval, dungeon = r.dungeon })
+                    table.insert(buckets[eval.slotID], { eval = eval, source = r.sourceName, ctx = r.ctx })
                 end
             end
         end
@@ -1202,6 +1556,12 @@ local function RefreshGear(page)
     if sortMode ~= "upgrades" and sortMode ~= "wanted" then sortMode = "slot" end
     if page.ColHead.selectedTabID ~= sortMode then Style.SelectTab(page.ColHead, sortMode) end
 
+    local strip = page.Strip
+    local source = db.gearSource or "both"
+    if source ~= "mplus" and source ~= "raid" then source = "both" end
+    if strip.Tabs.selectedTabID ~= source then Style.SelectTab(strip.Tabs, source) end
+    local def = self.RAID_DIFF_BY_KEY[self:GetRaidDifficulty()]
+    strip.Diff:SetText(source ~= "mplus" and def and def.name or "")
     local summary = self.slotSummary or {}
     local buckets = DropsBySlot()
     local order = {}
@@ -1216,6 +1576,13 @@ local function RefreshGear(page)
             if va ~= vb then return va > vb end
             return index[a.id] < index[b.id]
         end)
+    end
+
+    if self.uiExpandedSlotID then
+        Freeze("gear:" .. self.uiExpandedSlotID, sortMode)
+        order = KeepOrder("top", order, function(s) return s.id end)
+    else
+        Freeze(nil)
     end
 
     local y = 0
@@ -1248,7 +1615,7 @@ local function RefreshGear(page)
             row.Icon:SetDesaturated(true)
         end
         local state = self:GetSlotState(s.id)
-        local e = summary[s.id] or { count = 0, wanted = {}, best = NONE }
+        local e = summary[s.id] or { count = 0, wanted = {}, voidcore = {}, best = NONE }
         if state == "skip" then
             row.Border:SetColorTexture(0.8, 0.2, 0.2, 1)
         elseif state == "want" then
@@ -1265,24 +1632,25 @@ local function RefreshGear(page)
         row.Name:SetText(label .. "  " .. EquippedShort(g))
         local expanded = self.uiExpandedSlotID == s.id
         row.Arrow:SetRotation(expanded and 0 or math.rad(90))
-        SetRowCounts(row, string.format("%s%d|r", Hex(e.count > 0 and e.best or NONE), e.count), #e.wanted, scanned, accent)
+        SetRowCounts(row, string.format("%s%d|r", Hex(e.count > 0 and e.best or NONE), e.count), #e.wanted, scanned, accent, #e.voidcore)
         RowBackground(row, rowIndex, expanded, false)
         y = y + ROW_H + 1
         if expanded then
-            local list = buckets[s.id] or {}
+            local list = KeepOrder("items", buckets[s.id] or {}, function(entry) return entry.eval.item.itemID .. "|" .. (entry.source or "") end)
             local shown = 0
             for _, entry in ipairs(list) do
                 local eval = entry.eval
                 local st = self:GetItemState(eval.item.itemID)
-                if self:CountsAsUpgrade(eval) or self:CountsAsUpgrade(eval, "voidcore") or st == "want" or not db.hideNonUpgrades then
+                if self:CountsAsUpgrade(eval) or st == "want" or self:IsVoidcoreTarget(eval.item.itemID) or not db.hideNonUpgrades then
                     shown = shown + 1
                     itemIndex = itemIndex + 1
                     local it = Acquire(gearItems, itemIndex, function() return NewItemRow(content, true) end)
                     it:ClearAllPoints()
                     it:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
                     it:SetWidth(width)
-                    it.dungeonName = entry.dungeon.name
-                    FillItemRow(it, eval, entry.dungeon.name)
+                    it.dungeonName = entry.source
+                    it.ctx = entry.ctx
+                    FillItemRow(it, eval, entry.source)
                     y = y + ITEM_H
                 end
             end
@@ -1302,7 +1670,7 @@ local function RefreshGear(page)
                 elseif state == "skip" then
                     FillNoteRow(it, "Slot skipped.")
                 else
-                    FillNoteRow(it, "No drops for this slot in this season's dungeons.")
+                    FillNoteRow(it, "No drops for this slot.")
                 end
                 y = y + ITEM_H
             end
@@ -1325,6 +1693,8 @@ function ns:RefreshWindow()
     RefreshToolbar()
     if page == "dungeons" then
         RefreshDungeons(frame.Pages.dungeons)
+    elseif page == "raid" then
+        RefreshRaid(frame.Pages.raid)
     else
         RefreshGear(frame.Pages.gear)
     end
@@ -1648,6 +2018,7 @@ function ns:PrintStatus()
     print("  Weights:", self:StatProfileName() or "none", string.format("(%d profile(s) saved for this spec on this character)", #self:GetStatProfiles()))
     print("  Style:", Style.mode or "undecided", Style.IsSkinned() and "(EllesmereUI skin)" or "")
     print("  Wanted:", table.concat(self:WantedItemIDs(), ", "))
+    print("  Voidcore targets:", table.concat(self:VoidcoreItemIDs(), ", "))
     if self.loot then
         local n = 0
         for _ in pairs(self.loot.dungeons or {}) do n = n + 1 end
@@ -1655,6 +2026,9 @@ function ns:PrintStatus()
     else
         print("  Loot cache: none")
     end
+    local raids, bosses = self:GetRaids(), 0
+    for _, raid in ipairs(raids) do bosses = bosses + #raid.bosses end
+    print("  Raids:", #raids, "with", bosses, "boss(es); Raid tab difficulty", self:GetRaidDifficulty())
     for _, d in ipairs(self.dungeons) do
         local items = self:GetDungeonLoot(d.challengeMapID)
         local entry = self.loot and self.loot.dungeons and self.loot.dungeons[d.challengeMapID]

@@ -79,7 +79,7 @@ function ns:BuildSettingsPage(page)
     AddCheck("Count immediate item level upgrades",
         "Also count drops that are a higher item level than your current item even when they would not upgrade further than it (same or lower track).",
         "countIlvlUpgrades")
-    AddCheck("Hide dungeons with nothing for you", "Hide dungeons with no upgrade drops and no wanted items at the selected key.", "hideEmptyDungeons")
+    AddCheck("Hide dungeons and bosses with nothing for you", "Hide dungeons and raid bosses with no upgrade drops and no wanted items.", "hideEmptyDungeons")
     AddCheck("Only list upgrades and wanted items under a dungeon",
         "Hide the other drops when a dungeon is expanded.",
         "hideNonUpgrades")
@@ -116,17 +116,18 @@ function ns:BuildSettingsPage(page)
     wantedImport:SetScript("OnClick", ImportWanted)
     wantedBox:SetScript("OnEnterPressed", ImportWanted)
     wantedBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    ns.UI.Tip(wantedExport, "ANCHOR_RIGHT", "Export", "Puts your wanted list for this spec in the box as text you can copy and send to a friend.")
-    ns.UI.Tip(wantedImport, "ANCHOR_RIGHT", "Import", "Paste a list a friend exported and press Enter. Items are added to your wanted list for this spec.")
+    ns.UI.Tip(wantedExport, "ANCHOR_RIGHT", "Export", "Puts your wanted list and Voidcore targets for this spec in the box as text you can copy and send to a friend.")
+    ns.UI.Tip(wantedImport, "ANCHOR_RIGHT", "Import", "Paste a list a friend exported and press Enter. Items are added to your lists for this spec.")
     local clearRow = Row(28)
     panel.wantedCount = RowLabel(clearRow, "")
     local wantedClear = ns.UI.TextButton(clearRow, "Clear wanted list", 120, 20)
     wantedClear:SetPoint("RIGHT", -6, 0)
     wantedClear:SetScript("OnClick", function()
         for _, id in ipairs(ns:WantedItemIDs()) do ns:SetItemState(id, nil) end
+        for _, id in ipairs(ns:VoidcoreItemIDs()) do ns:SetVoidcoreTarget(id, false) end
         ns:RefreshOptionsPanel()
     end)
-    Hint("Star drops in the Dungeons tab to build the list. Items leave it by themselves once they turn up equipped or in your bags.")
+    Hint("Star a drop to want it; the purple star marks what you would spend a Voidcore on. Both leave the list by themselves once the item turns up.", 30)
 
     Header("Stat weights")
     local profRow = Row(28)
@@ -419,8 +420,9 @@ function ns:RefreshOptionsPanel()
     panel.followCheck:SetAlpha(side == "free" and 1 or 0.4)
     panel.followCheck.Label:SetAlpha(side == "free" and 1 or 0.4)
     panel.scaleText:SetText(string.format("%d%%", (ns.db.scale or 1) * 100 + 0.5))
-    local n = #self:WantedItemIDs()
-    panel.wantedCount:SetText(n == 0 and "|cff888888Nothing wanted yet for this spec|r" or string.format("%d wanted item(s) for %s", n, (self:SpecName(self:GetEvalSpecID())) or "this spec"))
+    local n, v = #self:WantedItemIDs(), #self:VoidcoreItemIDs()
+    panel.wantedCount:SetText((n + v) == 0 and "|cff888888Nothing wanted yet for this spec|r"
+        or string.format("%d wanted, %s%d Voidcore|r for %s", n, ns.VC_HEX, v, (self:SpecName(self:GetEvalSpecID())) or "this spec"))
     local order, source = self:GetStatPriority()
     local mode = self:GetStatMode()
     if panel.StatModeTabs.selectedTabID ~= mode then Style.SelectTab(panel.StatModeTabs, mode) end

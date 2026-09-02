@@ -111,6 +111,8 @@ _G.Settings = nil
 _G.SlashCmdList = {}
 _G.issecretvalue = function() return false end
 
+_G.IsShiftKeyDown = function() return false end
+
 -- timers: collected and run manually
 local timers = {}
 _G.C_Timer = { After = function(delay, fn) table.insert(timers, { t = delay, fn = fn }) end }
@@ -318,24 +320,57 @@ local LOOT = {
     [1309] = { 1004, 1005, 1006, 1007 },
     [1041] = { 1008, 1005 },
 }
-local ej = { tier = 1, instance = nil, diff = 23, classID = 0, specID = 0, preview = 0 }
+-- raids (tier 2): a multi-boss raid and the one-boss lair, which has a
+-- "World" difficulty (205) in place of LFR. Later bosses drop a step higher.
+local RAIDS = {
+    { id = 1500, name = "Venomous Abyss", diffs = { [17] = true, [14] = true, [15] = true, [16] = true },
+      bosses = { { id = 3001, name = "Nek'zali", step = 1 }, { id = 3002, name = "The Twin Fangs", step = 2 } } },
+    { id = 1501, name = "The Tidebound Grotto", diffs = { [205] = true, [14] = true, [15] = true, [16] = true },
+      bosses = { { id = 3010, name = "Nymrissa Wavecaller", step = 1 } } },
+}
+local RAID_LOOT = { [3001] = { 1001, 1005 }, [3002] = { 1008, 1009 }, [3010] = { 1003, 1002 } }
+local RAID_TRACK = { [17] = 2, [205] = 2, [14] = 3, [15] = 4, [16] = 5 } -- difficulty -> track index
+local function RaidByID(id) for _, r in ipairs(RAIDS) do if r.id == id then return r end end end
+local function BossByID(id) for _, r in ipairs(RAIDS) do for _, b in ipairs(r.bosses) do if b.id == id then return b end end end end
+local ej = { tier = 1, instance = nil, encounter = nil, diff = 23, classID = 0, specID = 0, preview = 0 }
 local lootDelayed = { [1309] = 1 } -- first read has no links
 _G.EJ_GetNumTiers = function() return 2 end
 _G.EJ_GetCurrentTier = function() return ej.tier end
 _G.EJ_SelectTier = function(t) ej.tier = t end
 _G.EJ_GetInstanceByIndex = function(i, isRaid)
-    if isRaid then return nil end
+    if isRaid then
+        if ej.tier ~= 2 then return nil end
+        local r = RAIDS[i]
+        if not r then return nil end
+        return r.id, r.name, "", 1, 1, 1, 1, 0, "", true, 0
+    end
     local inst = JOURNAL[ej.tier][i]
     if not inst then return nil end
     return inst.id, inst.name, "", 1, 1, 1, 1, 0, "", true, inst.map
 end
-_G.EJ_SelectInstance = function(id) ej.instance = id end
+_G.EJ_SelectInstance = function(id) ej.instance = id; ej.encounter = nil end
+_G.EJ_SelectEncounter = function(id) ej.encounter = id end
+_G.EJ_GetEncounterInfoByIndex = function(i, instanceID)
+    local r = RaidByID(instanceID)
+    local b = r and r.bosses[i]
+    if not b then return nil end
+    return b.name, "", b.id, 0, "", instanceID, 0, instanceID
+end
+_G.EJ_GetCreatureInfo = function(_, encounterID) return 1, "Boss", "", 0, 4242 end
 _G.EJ_SetDifficulty = function(d) ej.diff = d end
 _G.EJ_GetDifficulty = function() return ej.diff end
-_G.EJ_IsValidInstanceDifficulty = function(d) if d == 8 then return ej.tier == 2 end return d == 23 end
+_G.EJ_IsValidInstanceDifficulty = function(d)
+    local r = RaidByID(ej.instance)
+    if r then return r.diffs[d] == true end
+    if d == 8 then return ej.tier == 2 end
+    return d == 23
+end
 _G.EJ_SetLootFilter = function(c, s) ej.classID, ej.specID = c, s end
 _G.EJ_GetLootFilter = function() return ej.classID, ej.specID end
-_G.EJ_GetNumLoot = function() return LOOT[ej.instance] and #LOOT[ej.instance] or 0 end
+_G.EJ_GetNumLoot = function()
+    if ej.encounter then return RAID_LOOT[ej.encounter] and #RAID_LOOT[ej.encounter] or 0 end
+    return LOOT[ej.instance] and #LOOT[ej.instance] or 0
+end
 _G.C_EncounterJournal = {
     SetSlotFilter = function() end,
     SetPreviewMythicPlusLevel = function(level) ej.preview = level end,
@@ -346,6 +381,13 @@ _G.C_EncounterJournal = {
         return nil
     end,
     GetLootInfoByIndex = function(i)
+        if ej.encounter then
+            local id = RAID_LOOT[ej.encounter] and RAID_LOOT[ej.encounter][i]
+            if not id then return nil end
+            local boss = BossByID(ej.encounter)
+            local link = LinkWithBonus(id, BonusFor(RAID_TRACK[ej.diff] or 4, boss.step))
+            return { itemID = id, encounterID = ej.encounter, name = ITEMS[id][5], link = link, icon = 1, slot = "Slot", armorType = "Plate" }
+        end
         local id = LOOT[ej.instance] and LOOT[ej.instance][i]
         if not id then return nil end
         local delayed = lootDelayed[ej.instance]
@@ -443,6 +485,24 @@ check(bv and #bv == 4, "Blinding Vale scanned after delayed loot data (" .. tost
 check(ns.cdb.lootCache[30] and ns.cdb.lootCache[30][72], "cache keyed by season and spec")
 check(ej.tier == 1, "journal tier restored after scan (" .. tostring(ej.tier) .. ")")
 check(ns.dungeonByMapID[587].journalID == 1304, "journal instance via GetInstanceForGameMap")
+
+-- raids: the season's raids and bosses, loot per difficulty
+local raids = ns:GetRaids()
+check(#raids == 2 and raids[1].name == "Venomous Abyss" and #raids[1].bosses == 2 and #raids[2].bosses == 1, "season raids and bosses read from the journal (" .. #raids .. ")")
+local nek, twin, nym = raids[1].bosses[1], raids[1].bosses[2], raids[2].bosses[1]
+check(nek.loot.heroic and #nek.loot.heroic.items == 2 and nek.loot.lfr and nek.loot.normal and nek.loot.mythic, "boss loot scanned at every difficulty")
+check(raids[2].difficulties.lfr == 205 and nym.loot.lfr and #nym.loot.lfr.items == 2, "the lair's World difficulty fills the LFR slot")
+check(nek.portrait == 4242, "boss portrait kept for the row icon")
+check(ns.cdb.lootCache[30][72].raids == raids, "raids cached with the dungeons")
+local hctx = ns:GetRaidContext("heroic", nek)
+check(hctx.raid and hctx.ilvl == 305 and hctx.track.key == "Hero" and hctx.step == 1 and hctx.source == "journal", "Heroic boss drop: Hero 1/6 from the journal link")
+check(hctx.voidcore and hctx.voidcore.ilvl == 318 and hctx.voidcore.track.key == "Myth" and hctx.voidcore.step == 1, "Heroic Voidcore roll: Myth 1/6")
+check(ns:GetRaidContext("heroic", twin).ilvl == 308, "a later boss drops higher within the track (308 Hero 2/6)")
+local mctx = ns:GetRaidContext("mythic", nek)
+check(mctx.ilvl == 318 and mctx.voidcore.ilvl == 334 and mctx.voidcore.potential == 334, "Mythic: Myth 1/6 drop, fully upgraded Voidcore roll")
+local lctx = ns:GetRaidContext("lfr", nek)
+check(lctx.ilvl == 279 and lctx.track.key == "Veteran" and lctx.voidcore.ilvl == 292 and lctx.voidcore.track.key == "Champion", "LFR: Veteran drop, Champion 1/6 roll")
+check(ns:GetRaidContext("normal").ilvl == 292 and ns:GetRaidContext("normal").source == "track", "without a boss the track's first step stands in")
 check(ns.journalTier[1304] == 2, "instance mapped to its last (current season) tier")
 check(ns.loot.dungeons[587].difficulty == 8, "Murder Row read at Mythic Keystone difficulty (" .. tostring(ns.loot.dungeons[587].difficulty) .. ")")
 
@@ -460,7 +520,7 @@ check(byItem[1001].class == ns.UPGRADE_TRACK, "head drop vs Champion 4/6 = track
 check(byItem[1002].slotID == 14 and byItem[1002].class == ns.UPGRADE_ILVL, "trinket drop targets the weaker trinket and is an ilvl upgrade")
 check(byItem[1002].voidcore and byItem[1002].voidcore.class == ns.UPGRADE_TRACK, "same trinket from a Voidcore roll (Myth) is a track upgrade")
 check(byItem[1003].slotID == 17 and byItem[1003].class == ns.UPGRADE_TRACK, "2H drop with Titan's Grip targets the weaker hand (OH) as track upgrade")
-check(r.upgrades == 3 and r.total == 3 and r.vcUpgrades == 3, "Murder Row: 3/3 drop upgrades, 3/3 Voidcore upgrades")
+check(r.upgrades == 3 and r.total == 3, "Murder Row: 3/3 drop upgrades")
 
 local r2 = ns:ResultForDungeon(ns.dungeonByMapID[584])
 byItem = {}
@@ -476,7 +536,7 @@ byItem = {}
 for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
 check(byItem[1008].class == ns.UPGRADE_NONE and byItem[1008].voidcore.class == ns.UPGRADE_TRACK, "chest Hero 3/6 vs Hero 3/6 drop = none; Voidcore Myth = track upgrade")
 check(byItem[1005].slotID == 12, "ring in second dungeon still targets Veteran ring")
-check(r3.vcChance == 1 and r3.chance == 0.5, "Kings' Rest: 50% drop chance, 100% Voidcore chance")
+check(r3.chance == 0.5, "Kings' Rest: 50% drop chance")
 
 check(ns.results[1].upgrades >= ns.results[2].upgrades, "results sorted by drop upgrades")
 ns:SetItemState(1005, "want")
@@ -486,6 +546,66 @@ check(ns.results[1].wanted == 1 and ns.results[#ns.results].wanted == 0, "result
 check(ns:ResultForDungeon(ns.dungeonByMapID[584]).wantedItems[1].item.itemID == 1005, "wanted item listed for its dungeon")
 ns:SetItemState(1005, nil)
 ns.db.sortMode = "upgrades"
+
+-- raid bosses at the Raid tab's difficulty (Heroic by default)
+ns:Evaluate()
+check(#ns.raidResults == 2 and #ns.raidResults[1].bosses == 2, "bosses evaluated per raid")
+local rb = ns.resultByEncounter[3002]
+check(rb and rb.sourceName == "The Twin Fangs" and rb.ctx.raid and rb.ctx.difficultyName == "Heroic" and rb.ctx.ilvl == 308, "boss result carries its name and Heroic context")
+byItem = {}
+for _, e in ipairs(rb.items) do byItem[e.item.itemID] = e end
+check(byItem[1008].class == ns.UPGRADE_NONE and byItem[1008].voidcore.class == ns.UPGRADE_TRACK, "Heroic chest (308) is no drop upgrade over Hero 3/6, but the Myth 1/6 roll is")
+check(byItem[1009].slotID == 12 and byItem[1009].class == ns.UPGRADE_TRACK, "Heroic ring vs the Veteran ring is a track upgrade")
+local rn = ns.resultByEncounter[3001]
+byItem = {}
+for _, e in ipairs(rn.items) do byItem[e.item.itemID] = e end
+check(byItem[1001].class == ns.UPGRADE_TRACK and rn.upgrades == 2, "Nek'zali on Heroic: head and ring are track upgrades")
+ns:SetRaidDifficulty("mythic")
+RunTimers()
+rb = ns.resultByEncounter[3002]
+byItem = {}
+for _, e in ipairs(rb.items) do byItem[e.item.itemID] = e end
+check(rb.ctx.ilvl == 321 and byItem[1008].class == ns.UPGRADE_TRACK, "on Mythic the later boss drops Myth 2/6 (321): a track upgrade for the chest")
+ns:SetRaidDifficulty("lfr")
+RunTimers()
+rn = ns.resultByEncounter[3001]
+local lfrRing
+for _, e in ipairs(rn.items) do if e.item.itemID == 1005 then lfrRing = e end end
+check(rn.ctx.ilvl == 279 and rn.upgrades == 0 and lfrRing.voidcore.class == ns.UPGRADE_TRACK, "on LFR nothing is a drop upgrade; the Champion roll would still help the Veteran ring")
+ns:SetRaidDifficulty("heroic")
+RunTimers()
+
+-- the Gear tab draws from dungeons, raids or both
+ns.db.gearSource = "raid"
+local sm = ns:SlotSummary()
+check(sm[1].count == 1 and sm[1].sources["b3001"] and not sm[1].sources["d587"], "Gear tab from raids only: the head upgrade comes from Nek'zali")
+ns.db.gearSource = "mplus"
+sm = ns:SlotSummary()
+check(sm[1].count == 1 and sm[1].sources["d587"] and not sm[1].sources["b3001"], "from dungeons only: from Murder Row")
+ns.db.gearSource = "both"
+sm = ns:SlotSummary()
+check(sm[1].count == 2, "both: two head upgrades")
+
+-- Voidcore targets: a second flag per item, never mixed into the counts
+ns:SetVoidcoreTarget(1008, true)
+RunTimers()
+check(ns:IsVoidcoreTarget(1008) and ns:VoidcoreItemIDs()[1] == 1008, "chest marked as a Voidcore target")
+r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+check(r3.voidcore == 1 and r3.voidcoreItems[1].item.itemID == 1008 and r3.upgrades == 1, "Kings' Rest lists it as a Voidcore target without counting it as a drop upgrade")
+check(ns.resultByEncounter[3002].voidcore == 1, "and so does the boss that drops it")
+sm = ns:SlotSummary()
+check(sm[5].voidcore[1] and sm[5].voidcore[1].source == "Kings' Rest" and sm[5].count == 0, "slot summary lists the Voidcore target, count unchanged")
+ns:SetItemState(1008, "exclude")
+check(not ns:IsVoidcoreTarget(1008), "excluding an item drops it as a Voidcore target")
+ns:SetVoidcoreTarget(1008, true)
+check(ns:GetItemState(1008) == nil, "marking it again lifts the exclusion")
+check(ns:ExportWanted() == "SF2:72::1008", "export carries Voidcore targets (" .. ns:ExportWanted() .. ")")
+ns:SetVoidcoreTarget(1008, false)
+local added = ns:ImportWanted("SF2:72:1005:1008")
+check(added == 2 and ns:GetItemState(1005) == "want" and ns:IsVoidcoreTarget(1008), "import restores both lists")
+check(ns:ImportWanted("SF1:72:1002") == 1 and ns:GetItemState(1002) == "want", "old SF1 lists still import")
+ns:SetItemState(1005, nil); ns:SetItemState(1002, nil); ns:SetVoidcoreTarget(1008, false)
+RunTimers()
 
 -- countIlvlUpgrades off
 ns.db.countIlvlUpgrades = false
@@ -518,7 +638,8 @@ check(byItem[1008].class == ns.UPGRADE_WANT, "wanted item counts")
 check(ns:GetItemState(1008) == "want" and next(ns.cdb.itemState) == nil and ns.cdb.itemStateBySpec[72][1008] == "want", "legacy item state migrated per spec")
 check(r3.wanted == 1 and ns:WantedItemIDs()[1] == 1008, "wanted item counted for its dungeon")
 local sum = ns:SlotSummary()
-check(sum[5].wanted[1] and sum[5].wanted[1].eval.item.itemID == 1008 and sum[5].wanted[1].dungeon.challengeMapID == 249, "slot summary names the wanted item and where it drops")
+check(sum[5].wanted[1] and sum[5].wanted[1].eval.item.itemID == 1008 and sum[5].wanted[1].source == "Kings' Rest", "slot summary names the wanted item and where it drops")
+check(sum[5].wanted[2] and sum[5].wanted[2].source == "The Twin Fangs" and sum[5].wanted[2].ctx.raid, "and the raid boss that drops it too")
 check(sum[1].bestDrop and sum[1].bestDrop.eval.item.itemID == 1001, "slot summary names the best drop for the head slot")
 -- the wanted chest turns up in the bags: it leaves the list on its own
 BAGS[1008] = 1
@@ -529,7 +650,7 @@ BAGS[1008] = nil
 -- share the list
 ns:SetItemState(1002, "want"); ns:SetItemState(1005, "want")
 local exported = ns:ExportWanted()
-check(exported == "SF1:72:1002,1005", "wanted list exported (" .. exported .. ")")
+check(exported == "SF2:72:1002,1005:", "wanted list exported (" .. exported .. ")")
 ns:ClearItemStates()
 check(#ns:WantedItemIDs() == 0, "wanted list cleared")
 local added = ns:ImportWanted(exported)
@@ -558,19 +679,14 @@ link, kind = ns:LinkForContext(head, ns.dropCtx)
 check(kind == "exact" and BonusOfLink(link) == BonusFor(3, 4), "tooltip link at +5 is Champion 4/6")
 ns:SetTargetKey(10); RunTimers()
 ns:StepTargetKey(1); RunTimers()
-check(ns.db.voidcoreMode and ns.db.targetKey == 10 and ns.dropCtx.isVoidcore and ns.dropCtx.ilvl == 318, "selector past +10 becomes Voidcore (318)")
-check(ns:TargetLabel():find("Voidcore") ~= nil, "selector label shows Voidcore")
-link, kind = ns:LinkForContext(head, ns.dropCtx)
+check(ns.db.targetKey == 10 and not ns.dropCtx.isVoidcore and ns:TargetLabel() == "+10", "the selector stops at the last useful key")
+local vcCtx = { ilvl = 318, step = 1, track = ns.trackByKey.Myth, key = 10, isVoidcore = true }
+link, kind = ns:LinkForContext(head, vcCtx)
 check(kind == "exact" and BonusOfLink(link) == BonusFor(5, 1), "Voidcore tooltip link is Myth 1/6 via discovered bonus id")
 check(ns.db.linkBonus[30] and ns.db.linkBonus[30].targets["318/1/Myth"] == BonusFor(5, 1), "discovered bonus id cached per season")
-r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
-byItem = {}
-for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
-check(byItem[1008].class == ns.UPGRADE_TRACK, "in Voidcore mode the Hero 3/6 chest drop is a track upgrade")
-ns:StepTargetKey(1); RunTimers()
-check(ns.db.voidcoreMode, "stepping up from Voidcore stays at Voidcore")
 ns:StepTargetKey(-1); RunTimers()
-check(not ns.db.voidcoreMode and ns.db.targetKey == 10 and not ns.dropCtx.isVoidcore, "stepping down from Voidcore returns to +10")
+check(ns.db.targetKey == 9, "stepping down from +10 gives +9")
+ns:SetTargetKey(10); RunTimers()
 ns.db.linkBonus = {}
 ns:ClearLinkCache()
 local l2 = ns:LinkAtLevel(head.link, 311, 3, "Hero")
@@ -809,6 +925,64 @@ ns:RefreshWindow()
 ns.db.gearSort = "upgrades"
 ns:RefreshWindow()
 ns.db.gearSort = "slot"
+ns:ShowPage("raid")
+check(ns:CurrentPage() == "raid", "Raid tab shown")
+ns.uiExpandedEncounterID = 3001
+ns:RefreshWindow()
+local raidPage = SlotFillerFrame.Pages.raid
+check(raidPage.Strip.Tabs.selectedTabID == "heroic", "difficulty strip shows Heroic")
+ns:SetRaidDifficulty("mythic")
+RunTimers()
+check(raidPage.Strip.Tabs.selectedTabID == "mythic", "difficulty strip follows the setting")
+ns:SetRaidDifficulty("heroic")
+RunTimers()
+ns.db.gearSource = "raid"
+ns:ShowPage("gear")
+local gearPage = SlotFillerFrame.Pages.gear
+check(gearPage.Strip.Tabs.selectedTabID == "raid" and gearPage.Strip.Diff:GetText() == "Heroic", "Gear strip shows the source and the raid difficulty")
+ns.db.gearSource = "both"
+-- the stars and right-click toggle both ways
+ns:ShowPage("dungeons")
+ns.uiExpandedMapID = 587
+ns:RefreshWindow()
+local itemRow = ns.UI.Pools.dungeonItems[1]
+check(itemRow and itemRow.eval, "an expanded drop row is available")
+local id = itemRow.eval.item.itemID
+itemRow.Star.GetParent = function() return itemRow end -- the stub tracks no parents
+itemRow.VC.GetParent = function() return itemRow end
+itemRow.Star:GetScript("OnClick")(itemRow.Star)
+check(ns:GetItemState(id) == "want", "wanted star: first click wants the item")
+itemRow.Star:GetScript("OnClick")(itemRow.Star)
+check(ns:GetItemState(id) == nil, "wanted star: second click removes it")
+itemRow.VC:GetScript("OnClick")(itemRow.VC)
+check(ns:IsVoidcoreTarget(id), "Voidcore star: first click marks the target")
+itemRow.VC:GetScript("OnClick")(itemRow.VC)
+check(not ns:IsVoidcoreTarget(id), "Voidcore star: second click unmarks it")
+ns:CycleItemState(id)
+check(ns:GetItemState(id) == "exclude", "right-click excludes")
+ns:CycleItemState(id)
+check(ns:GetItemState(id) == nil, "right-click again includes")
+-- an open list keeps its order while you star things; reopening applies the new order
+ns.uiExpandedMapID = 584
+ns:RefreshWindow()
+local pool = ns.UI.Pools.dungeonItems
+local before = {}
+for i = 1, 4 do before[i] = pool[i].eval and pool[i].eval.item.itemID end
+check(before[3] == 1004 and before[4] == 1006, "Blinding Vale opens with the non-upgrades last (" .. table.concat(before, ",") .. ")")
+ns:SetItemState(1004, "want")
+RunTimers()
+check(ns:ResultForDungeon(ns.dungeonByMapID[584]).items[1].item.itemID == 1004, "the wanted sword now sorts first in the results")
+local after = {}
+for i = 1, 4 do after[i] = pool[i].eval and pool[i].eval.item.itemID end
+check(after[3] == 1004 and after[1] == before[1], "but the open list keeps its order (" .. table.concat(after, ",") .. ")")
+ns.uiExpandedMapID = nil
+ns:RefreshWindow()
+ns.uiExpandedMapID = 584
+ns:RefreshWindow()
+check(pool[1].eval.item.itemID == 1004, "reopening the list applies the new order")
+ns:SetItemState(1004, nil)
+RunTimers()
+ns.uiExpandedMapID = nil
 ns:ToggleOptionsPanel()
 check(ns:CurrentPage() == "settings", "Settings tab shown")
 ns:RefreshOptionsPanel()

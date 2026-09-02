@@ -60,6 +60,9 @@ local function UpdateButton(button)
         if r.wanted and r.wanted > 0 then
             text = text .. ns.Style.AccentHex() .. "*|r"
         end
+        if r.voidcore and r.voidcore > 0 then
+            text = text .. ns.VC_HEX .. "*|r"
+        end
         badge:SetText(text)
     else
         badge:SetText("")
@@ -109,7 +112,7 @@ local function HookScrollBox()
 end
 
 -- Tooltip lines shared by group listings and keystones: upgrade count for the
--- dungeon at `key`, plus the Voidcore chance when the context has one.
+-- dungeon at `key`, the wanted items and the Voidcore targets that drop there.
 local function AddDungeonLines(tooltip, r, key, ctx)
     tooltip:AddLine(" ")
     if r.upgrades > 0 then
@@ -129,6 +132,13 @@ local function AddDungeonLines(tooltip, r, key, ctx)
             names[#names + 1] = eval.item.link and eval.item.link:match("%[(.-)%]") or eval.item.name or "?"
         end
         tooltip:AddLine(string.format("%sWanted here:|r %s", ns.Style.AccentHex(), table.concat(names, ", ")), 1, 1, 1, true)
+    end
+    if r.voidcore and r.voidcore > 0 then
+        local names = {}
+        for _, eval in ipairs(r.voidcoreItems or {}) do
+            names[#names + 1] = eval.item.link and eval.item.link:match("%[(.-)%]") or eval.item.name or "?"
+        end
+        tooltip:AddLine(string.format("%sVoidcore target here:|r %s", ns.VC_HEX, table.concat(names, ", ")), 1, 1, 1, true)
     end
 end
 

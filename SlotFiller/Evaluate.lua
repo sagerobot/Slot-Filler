@@ -1,9 +1,13 @@
--- Slot Filler: decide which drops are upgrades and rank dungeons.
+-- Slot Filler: decide which drops are upgrades and rank dungeons and bosses.
 --
--- Every item is judged twice:
---   * as the end-of-dungeon drop at the chosen key level, and
---   * as a Nebulous Voidcore bonus roll, which Blizzard awards at the Great
---     Vault item level of that key (+10 and up: Myth 1/6).
+-- Every item is judged as the direct drop: end of dungeon at the chosen key
+-- level, or off a raid boss at the chosen difficulty. That is what the
+-- lists and counts show. It is also judged as a Nebulous Voidcore bonus
+-- roll, which Blizzard awards at the Great Vault level (a key's vault item
+-- level, +10 and up: Myth 1/6; a raid boss one upgrade track above the
+-- difficulty); that verdict is only shown in tooltips while Shift is held.
+-- Which drops to spend a Voidcore on is the player's call: the Voidcore
+-- targets, a second star next to the wanted list.
 local _, ns = ...
 
 local NONE, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
@@ -24,25 +28,61 @@ local function Level(ilvl, source)
 end
 
 function ns:GetDropContext(keyLevel)
-    local maxKey = self:MaxUsefulKey() or 10
-    if not keyLevel and self.db and self.db.voidcoreMode then
-        -- Selector past the last useful key: the reward is the Voidcore roll,
-        -- which uses the Great Vault item level of that key.
-        local vaultIlvl, vaultSource = self:VaultIlvl(maxKey)
-        local ctx = Level(vaultIlvl, vaultSource) or { source = vaultSource }
-        ctx.key = maxKey
-        ctx.isVoidcore = true
-        ctx.voidcore = Level(vaultIlvl, vaultSource)
-        ctx.statPrio, ctx.statPrioSource = self:GetStatPriority()
-    ctx.statWeights = self:GetStatWeights()
-        return ctx
-    end
     keyLevel = keyLevel or (self.db and self.db.targetKey) or 10
     local ilvl, source = self:RewardIlvl(keyLevel)
     local vaultIlvl, vaultSource = self:VaultIlvl(keyLevel)
     local ctx = Level(ilvl, source) or { source = source }
     ctx.key = keyLevel
     ctx.voidcore = Level(vaultIlvl, vaultSource)
+    ctx.statPrio, ctx.statPrioSource = self:GetStatPriority()
+    ctx.statWeights = self:GetStatWeights()
+    return ctx
+end
+
+-------------------------------------------------------------------------------
+-- Drop context for a raid boss at a difficulty
+-------------------------------------------------------------------------------
+function ns:GetRaidDifficulty()
+    local key = self.db and self.db.raidDifficulty
+    return (key and self.RAID_DIFF_BY_KEY[key]) and key or "heroic"
+end
+
+function ns:SetRaidDifficulty(key)
+    if not self.RAID_DIFF_BY_KEY[key] or not self.db then return end
+    self.db.raidDifficulty = key
+    self:Fire("SETTINGS_CHANGED")
+end
+
+-- The direct drop is the difficulty's track; the boss's journal links carry
+-- its own level within it (later bosses drop higher), the track's first
+-- step stands in when they do not. The Voidcore roll (and the vault) is one
+-- track up at its first step; on Mythic it is the fully upgraded item, or
+-- the drop itself where that is already past the top of the track.
+function ns:GetRaidContext(diffKey, boss)
+    local def = self.RAID_DIFF_BY_KEY[diffKey] or self.RAID_DIFF_BY_KEY.heroic
+    local track = self.trackByKey[def.track]
+    local ilvl, source
+    local items = boss and self:GetBossLoot(boss, def.key)
+    if track and items then
+        for _, item in ipairs(items) do
+            local l = self.ItemLevelOf(item.link)
+            if l and l >= track.min and (l <= track.max or def.track == "Myth") and (not ilvl or l > ilvl) then ilvl = l end
+        end
+        if ilvl then source = "journal" end
+    end
+    if not ilvl and track then ilvl, source = track.min, "track" end
+    local ctx = Level(ilvl, source) or { source = source }
+    ctx.raid = true
+    ctx.difficulty = def.key
+    ctx.difficultyName = def.name
+    if track then
+        local up
+        for i, t in ipairs(self.tracks) do
+            if t == track then up = self.tracks[i + 1]; break end
+        end
+        local vcIlvl = up and up.min or math.max(track.max, ilvl or 0)
+        ctx.voidcore = Level(vcIlvl, source)
+    end
     ctx.statPrio, ctx.statPrioSource = self:GetStatPriority()
     ctx.statWeights = self:GetStatWeights()
     return ctx
@@ -166,15 +206,10 @@ function ns:EvaluateItem(item, ctx)
     return eval
 end
 
--- which: nil/"drop" for the end-of-dungeon drop, "voidcore" for the bonus roll
-function ns:CountsAsUpgrade(eval, which)
-    local r = eval
-    if which == "voidcore" then
-        r = eval.voidcore
-        if not r then return false end
-    end
-    if r.class == TRACK or r.class == WANT then return true end
-    if r.class == ILVL and self.db.countIlvlUpgrades then return true end
+-- Whether the direct drop counts in the Drops column.
+function ns:CountsAsUpgrade(eval)
+    if eval.class == TRACK or eval.class == WANT then return true end
+    if eval.class == ILVL and self.db.countIlvlUpgrades then return true end
     return false
 end
 
@@ -186,8 +221,6 @@ for i, s in ipairs(ns.SLOTS) do slotOrder[s.id] = i end
 
 local function ItemSort(a, b)
     if a.class ~= b.class then return a.class > b.class end
-    local av, bv = a.voidcore and a.voidcore.class or 0, b.voidcore and b.voidcore.class or 0
-    if av ~= bv then return av > bv end
     local sa, sb = slotOrder[a.slotID or 0] or 99, slotOrder[b.slotID or 0] or 99
     if sa ~= sb then return sa < sb end
     -- same slot: by weighted value when a scale is imported, else the drop
@@ -201,23 +234,23 @@ end
 -------------------------------------------------------------------------------
 -- Full evaluation
 -------------------------------------------------------------------------------
--- One dungeon against one drop context.
-function ns:EvaluateDungeon(d, ctx)
-    local loot = self:GetDungeonLoot(d.challengeMapID)
+-- One loot table (a dungeon's or a boss's) against one drop context. The
+-- caller adds where it came from: sourceName / sourceKey and dungeon or
+-- raid + boss.
+local function EvaluateLoot(self, loot, ctx)
     local r = {
-        dungeon = d,
+        ctx = ctx,
         items = {},
-        upgrades = 0,        -- end-of-dungeon drop upgrades
+        upgrades = 0,        -- direct drop upgrades
         trackUpgrades = 0,
-        vcUpgrades = 0,      -- Voidcore roll upgrades
-        vcTrackUpgrades = 0,
         total = 0,
         slots = {},
         slotCount = 0,
         chance = 0,
-        vcChance = 0,
         wanted = 0,          -- items on the wanted list that drop here
         wantedItems = {},
+        voidcore = 0,        -- Voidcore targets that drop here
+        voidcoreItems = {},
         scanned = loot ~= nil,
     }
     if loot then
@@ -229,6 +262,10 @@ function ns:EvaluateDungeon(d, ctx)
                 r.wanted = r.wanted + 1
                 table.insert(r.wantedItems, eval)
             end
+            if self:IsVoidcoreTarget(item.itemID) then
+                r.voidcore = r.voidcore + 1
+                table.insert(r.voidcoreItems, eval)
+            end
             if self:CountsAsUpgrade(eval) then
                 r.upgrades = r.upgrades + 1
                 if eval.class ~= ILVL then r.trackUpgrades = r.trackUpgrades + 1 end
@@ -237,17 +274,30 @@ function ns:EvaluateDungeon(d, ctx)
                     r.slotCount = r.slotCount + 1
                 end
             end
-            if self:CountsAsUpgrade(eval, "voidcore") then
-                r.vcUpgrades = r.vcUpgrades + 1
-                if eval.voidcore.class ~= ILVL then r.vcTrackUpgrades = r.vcTrackUpgrades + 1 end
-            end
         end
         table.sort(r.items, ItemSort)
         if r.total > 0 then
             r.chance = r.upgrades / r.total
-            r.vcChance = r.vcUpgrades / r.total
         end
     end
+    return r
+end
+
+function ns:EvaluateDungeon(d, ctx)
+    local r = EvaluateLoot(self, self:GetDungeonLoot(d.challengeMapID), ctx)
+    r.dungeon = d
+    r.sourceName = d.name
+    r.sourceKey = "d" .. tostring(d.challengeMapID)
+    return r
+end
+
+function ns:EvaluateBoss(raid, boss, diffKey)
+    local ctx = self:GetRaidContext(diffKey, boss)
+    ctx.difficultyName = self:RaidDifficultyName(raid, diffKey)
+    local r = EvaluateLoot(self, self:GetBossLoot(boss, diffKey), ctx)
+    r.raid, r.boss = raid, boss
+    r.sourceName = boss.name
+    r.sourceKey = "b" .. tostring(boss.encounterID)
     return r
 end
 
@@ -276,7 +326,6 @@ function ns:Evaluate()
         if a.upgrades ~= b.upgrades then return a.upgrades > b.upgrades end
         if a.wanted ~= b.wanted then return a.wanted > b.wanted end
         if a.chance ~= b.chance then return a.chance > b.chance end
-        if a.vcChance ~= b.vcChance then return a.vcChance > b.vcChance end
         return a.dungeon.name < b.dungeon.name
     end)
 
@@ -284,37 +333,77 @@ function ns:Evaluate()
     self.dropCtx = ctx
     self.resultByMapID = {}
     for _, r in ipairs(results) do self.resultByMapID[r.dungeon.challengeMapID] = r end
+
+    -- raid bosses at the chosen difficulty, grouped by raid
+    local diffKey = self:GetRaidDifficulty()
+    local rmode = self.db.raidSort or "boss"
+    local raidResults, byEncounter = {}, {}
+    for _, raid in ipairs(self:GetRaids()) do
+        local group = { raid = raid, bosses = {} }
+        for _, boss in ipairs(raid.bosses) do
+            local r = self:EvaluateBoss(raid, boss, diffKey)
+            table.insert(group.bosses, r)
+            byEncounter[boss.encounterID] = r
+        end
+        if rmode ~= "boss" then
+            table.sort(group.bosses, function(a, b)
+                if rmode == "wanted" and a.wanted ~= b.wanted then return a.wanted > b.wanted end
+                if a.upgrades ~= b.upgrades then return a.upgrades > b.upgrades end
+                if a.wanted ~= b.wanted then return a.wanted > b.wanted end
+                return a.boss.index < b.boss.index
+            end)
+        end
+        table.insert(raidResults, group)
+    end
+    self.raidResults = raidResults
+    self.resultByEncounter = byEncounter
     self:Fire("RESULTS_UPDATED")
     return results
 end
 
--- Per-slot summary for the slot strip: best upgrade class available anywhere.
+-- The results the Gear tab draws from: dungeons, raid bosses or both.
+function ns:GearResults()
+    local source = self.db and self.db.gearSource or "both"
+    local list = {}
+    if source ~= "raid" then
+        for _, r in ipairs(self.results or {}) do list[#list + 1] = r end
+    end
+    if source ~= "mplus" then
+        for _, group in ipairs(self.raidResults or {}) do
+            for _, r in ipairs(group.bosses) do list[#list + 1] = r end
+        end
+    end
+    return list
+end
+
+-- Per-slot summary for the Gear tab: best upgrade class available anywhere
+-- among the sources it lists, plus the wanted items and Voidcore targets.
 function ns:SlotSummary()
     local summary = {}
     for _, s in ipairs(self.SLOTS) do
-        summary[s.id] = { best = NONE, dungeons = {}, count = 0, vcCount = 0, vcBest = NONE, wanted = {} }
+        summary[s.id] = { best = NONE, sources = {}, count = 0, wanted = {}, voidcore = {} }
     end
-    if not self.results then return summary end
-    for _, r in ipairs(self.results) do
+    for _, r in ipairs(self:GearResults()) do
         for _, eval in ipairs(r.items) do
             if eval.slotID then
                 local e = summary[eval.slotID]
                 if self:GetItemState(eval.item.itemID) == "want" then
-                    table.insert(e.wanted, { eval = eval, dungeon = r.dungeon })
+                    table.insert(e.wanted, { eval = eval, source = r.sourceName, ctx = r.ctx })
+                end
+                if self:IsVoidcoreTarget(eval.item.itemID) then
+                    table.insert(e.voidcore, { eval = eval, source = r.sourceName, ctx = r.ctx })
                 end
                 if self:CountsAsUpgrade(eval) then
                     e.count = e.count + 1
                     if eval.class > e.best then e.best = eval.class end
-                    e.dungeons[r.dungeon.challengeMapID] = (e.dungeons[r.dungeon.challengeMapID] or 0) + 1
+                    local src = e.sources[r.sourceKey]
+                    if not src then src = { name = r.sourceName, n = 0 }; e.sources[r.sourceKey] = src end
+                    src.n = src.n + 1
                     -- best drop: largest fully-upgraded gain, then immediate gain
                     local gain = (eval.potentialGain or 0) * 1000 + (eval.gain or 0)
                     if eval.class ~= WANT and (not e.bestDrop or gain > e.bestDropScore) then
-                        e.bestDrop, e.bestDropScore = { eval = eval, dungeon = r.dungeon }, gain
+                        e.bestDrop, e.bestDropScore = { eval = eval, source = r.sourceName }, gain
                     end
-                end
-                if self:CountsAsUpgrade(eval, "voidcore") then
-                    e.vcCount = e.vcCount + 1
-                    if eval.voidcore.class > e.vcBest then e.vcBest = eval.voidcore.class end
                 end
             end
         end
@@ -351,33 +440,20 @@ ns:On("SETTINGS_CHANGED", Reevaluate)
 ns:On("TRACKS_CHANGED", Reevaluate)
 ns:On("DUNGEONS_UPDATED", Reevaluate)
 
--- Selector: +2 .. +maxKey, then "Voidcore" (end-of-dungeon gear stops
--- improving past maxKey, so the next thing up is the bonus roll).
+-- Selector: +2 .. +maxKey (end-of-dungeon gear stops improving past it).
 function ns:SetTargetKey(n)
     n = tonumber(n)
     if not n then return end
     local maxKey = self:MaxUsefulKey() or 10
-    if n > maxKey then
-        self.db.voidcoreMode = true
-        self.db.targetKey = maxKey
-    else
-        self.db.voidcoreMode = false
-        self.db.targetKey = math.max(2, math.floor(n))
-    end
+    self.db.targetKey = math.max(2, math.min(maxKey, math.floor(n)))
     self:ClearRewardCache()
     self:Fire("SETTINGS_CHANGED")
 end
 
 function ns:StepTargetKey(delta)
-    local maxKey = self:MaxUsefulKey() or 10
-    if self.db.voidcoreMode then
-        if delta < 0 then self:SetTargetKey(maxKey) end
-        return
-    end
     self:SetTargetKey((self.db.targetKey or 10) + delta)
 end
 
 function ns:TargetLabel()
-    if self.db.voidcoreMode then return self.VC_HEX .. "Voidcore|r" end
     return "+" .. tostring(self.db.targetKey or 10)
 end

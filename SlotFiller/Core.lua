@@ -12,8 +12,6 @@ ns.DEFAULTS = {
     profile = {
         -- Which key level the "drop" is evaluated at.
         targetKey = 10,
-        -- Selector past the last useful key: evaluate the Voidcore roll instead.
-        voidcoreMode = false,
         -- Learned upgrade-track bonus IDs per season (Links.lua).
         linkBonus = {},
         -- Count immediate item level upgrades that are not a track upgrade.
@@ -22,6 +20,12 @@ ns.DEFAULTS = {
         sortMode = "upgrades",
         -- Gear tab sorting: "slot" | "upgrades" | "wanted"
         gearSort = "slot",
+        -- Gear tab: which drops it lists: "mplus" | "both" | "raid"
+        gearSource = "both",
+        -- Raid tab: difficulty the bosses are judged at: "lfr" | "normal" | "heroic" | "mythic"
+        raidDifficulty = "heroic",
+        -- Raid tab sorting: "boss" | "upgrades" | "wanted"
+        raidSort = "boss",
         -- Where the window lives relative to PVEFrame: "left" | "right" | "free"
         anchorSide = "left",
         -- Show only while the Premade Groups tab is active (otherwise whenever PVEFrame is open).
@@ -62,7 +66,9 @@ ns.DEFAULTS = {
         itemState = {},
         -- Per-spec item overrides: [specID] = { [itemID] = "want" | "exclude" }. "want" is the wanted list.
         itemStateBySpec = {},
-        -- Wanted items that turned up: [specID] = { [itemID] = time }.
+        -- Voidcore targets, the drops to spend a Nebulous Voidcore on: [specID] = { [itemID] = true }.
+        voidcoreBySpec = {},
+        -- Wanted items and Voidcore targets that turned up: [specID] = { [itemID] = time }.
         obtained = {},
         -- Loot cache: [seasonID] = { [specID] = { time, version, dungeons = { [challengeMapID] = {...} } } }
         lootCache = {},
@@ -220,10 +226,8 @@ SlashCmdList.SLOTFILLER = function(msg)
         local n = tonumber(rest)
         if n then
             ns:SetTargetKey(n)
-        elseif rest == "vc" or rest == "voidcore" then
-            ns:SetTargetKey(99)
         else
-            ns:Print("Usage: /sf key <level> | vc")
+            ns:Print("Usage: /sf key <level>")
         end
     elseif cmd == "options" or cmd == "config" or cmd == "settings" then
         ns:OpenOptions()
@@ -292,7 +296,7 @@ SlashCmdList.SLOTFILLER = function(msg)
     else
         ns:Print("Commands:")
         print("  /sf            toggle the window")
-        print("  /sf key <n>    evaluate drops at key level n (/sf key vc = Voidcore roll)")
+        print("  /sf key <n>    evaluate drops at key level n")
         print("  /sf rescan     rescan dungeon loot tables")
         print("  /sf options    open settings")
         print("  /sf status     print what the addon currently knows")

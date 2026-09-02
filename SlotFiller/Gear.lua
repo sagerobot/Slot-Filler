@@ -244,16 +244,57 @@ local function StatesFor(self)
     return by[spec]
 end
 
+-- Voidcore targets: the drops you would spend a Nebulous Voidcore on, a
+-- second flag next to the wanted list. [specID] = { [itemID] = true }
+local function VoidcoreFor(self)
+    if not self.cdb then return nil end
+    local spec = self:GetEvalSpecID()
+    if not spec then return nil end
+    self.cdb.voidcoreBySpec = self.cdb.voidcoreBySpec or {}
+    local t = self.cdb.voidcoreBySpec[spec]
+    if not t then t = {}; self.cdb.voidcoreBySpec[spec] = t end
+    return t
+end
+
 function ns:GetItemState(itemID)
     local t = StatesFor(self)
     return t and t[itemID] or nil
 end
 
+-- Excluding an item (already rolled it) also drops it as a Voidcore target.
 function ns:SetItemState(itemID, state)
     local t = StatesFor(self)
     if not t then return end
     t[itemID] = state
+    if state == "exclude" then
+        local vc = VoidcoreFor(self)
+        if vc then vc[itemID] = nil end
+    end
     self:Fire("SETTINGS_CHANGED")
+end
+
+function ns:IsVoidcoreTarget(itemID)
+    local t = VoidcoreFor(self)
+    return (t and t[itemID]) and true or false
+end
+
+-- Marking a Voidcore target lifts an exclusion.
+function ns:SetVoidcoreTarget(itemID, on)
+    local t = VoidcoreFor(self)
+    if not t then return end
+    t[itemID] = on and true or nil
+    local states = StatesFor(self)
+    if on and states and states[itemID] == "exclude" then states[itemID] = nil end
+    self:Fire("SETTINGS_CHANGED")
+end
+
+-- Sorted Voidcore target item IDs for the evaluated spec.
+function ns:VoidcoreItemIDs()
+    local out = {}
+    local t = VoidcoreFor(self)
+    if t then for id in pairs(t) do out[#out + 1] = id end end
+    table.sort(out)
+    return out
 end
 
 -- Sorted list of wanted item IDs for the evaluated spec.
@@ -270,6 +311,8 @@ end
 function ns:ClearItemStates()
     local t = StatesFor(self)
     if t then wipe(t) end
+    local vc = VoidcoreFor(self)
+    if vc then wipe(vc) end
     self:Fire("SETTINGS_CHANGED")
 end
 
@@ -288,57 +331,84 @@ function ns:OwnsItem(itemID)
     return false
 end
 
--- Loot table entry for an item ID (any dungeon), or nil.
+-- Loot table entry for an item ID (any dungeon or boss), or nil.
 function ns:LootItem(itemID)
     local entry = self.loot
-    if not (entry and entry.dungeons) then return nil end
-    for _, d in pairs(entry.dungeons) do
+    if not entry then return nil end
+    for _, d in pairs(entry.dungeons or {}) do
         for _, item in ipairs(d.items or {}) do
             if item.itemID == itemID then return item end
+        end
+    end
+    for _, raid in ipairs(entry.raids or {}) do
+        for _, boss in ipairs(raid.bosses) do
+            for _, l in pairs(boss.loot or {}) do
+                for _, item in ipairs(l.items or {}) do
+                    if item.itemID == itemID then return item end
+                end
+            end
         end
     end
     return nil
 end
 
+-- A wanted item or Voidcore target that turned up leaves its list.
 function ns:CheckObtained()
     local states = StatesFor(self)
     if not states then return end
+    local targets = VoidcoreFor(self) or {}
     local spec = self:GetEvalSpecID()
-    local changed = false
+    local got = {}
     for itemID, state in pairs(states) do
         if state == "want" and self:OwnsItem(itemID) then
             states[itemID] = nil
-            self.cdb.obtained = self.cdb.obtained or {}
-            self.cdb.obtained[spec] = self.cdb.obtained[spec] or {}
-            self.cdb.obtained[spec][itemID] = time()
-            local item = self:LootItem(itemID)
-            self:Print("Got it:", item and (item.link or item.name) or ("item " .. itemID), "- removed from your wanted list.")
-            changed = true
+            got[itemID] = true
         end
+    end
+    for itemID in pairs(targets) do
+        if self:OwnsItem(itemID) then
+            targets[itemID] = nil
+            got[itemID] = true
+        end
+    end
+    local changed = false
+    for itemID in pairs(got) do
+        self.cdb.obtained = self.cdb.obtained or {}
+        self.cdb.obtained[spec] = self.cdb.obtained[spec] or {}
+        self.cdb.obtained[spec][itemID] = time()
+        local item = self:LootItem(itemID)
+        self:Print("Got it:", item and (item.link or item.name) or ("item " .. itemID), "- removed from your list.")
+        changed = true
     end
     if changed then self:Fire("SETTINGS_CHANGED") end
 end
 
 -------------------------------------------------------------------------------
--- Wanted list sharing: "SF1:<specID>:<itemID>,<itemID>,..."
+-- List sharing: "SF2:<specID>:<wanted ids>:<Voidcore target ids>"
+-- (SF1 carried only the wanted ids and still imports.)
 -------------------------------------------------------------------------------
 function ns:ExportWanted()
-    local ids = self:WantedItemIDs()
-    return string.format("SF1:%d:%s", self:GetEvalSpecID() or 0, table.concat(ids, ","))
+    return string.format("SF2:%d:%s:%s", self:GetEvalSpecID() or 0,
+        table.concat(self:WantedItemIDs(), ","), table.concat(self:VoidcoreItemIDs(), ","))
 end
 
--- Adds the items in the string to the current spec's wanted list. Returns the
+-- Adds the items in the string to the current spec's lists. Returns the
 -- number added, or nil and a reason.
 function ns:ImportWanted(text)
     if type(text) ~= "string" then return nil, "empty" end
-    local spec, list = text:match("SF1:(%d+):([%d,]*)")
+    local spec, list, targets = text:match("SF%d:(%d+):([%d,]*):?([%d,]*)")
     if not spec then return nil, "not a Slot Filler list" end
     local t = StatesFor(self)
-    if not t then return nil, "no spec" end
+    local vc = VoidcoreFor(self)
+    if not t or not vc then return nil, "no spec" end
     local n = 0
     for id in list:gmatch("%d+") do
         id = tonumber(id)
         if id and t[id] ~= "want" then t[id] = "want"; n = n + 1 end
+    end
+    for id in (targets or ""):gmatch("%d+") do
+        id = tonumber(id)
+        if id and not vc[id] then vc[id] = true; n = n + 1 end
     end
     self:Fire("SETTINGS_CHANGED")
     return n, tonumber(spec)

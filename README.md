@@ -3,23 +3,35 @@
 A World of Warcraft (retail, Midnight 12.1) addon that answers one question
 when you open the Group Finder: **which Mythic+ dungeon should I run for gear?**
 
-It docks a window to the left of the Dungeons & Raids window with three tabs:
+It docks a window to the left of the Dungeons & Raids window with four tabs:
 
 - **Dungeons** ranks every dungeon in the season by how many of its drops
   would be upgrades for you at the key level you choose, and shows how many
   items from your wanted list drop there. Click a dungeon to see its drops.
+- **Raid** does the same for every boss of the season's raids (the lair
+  included) at the difficulty you pick on the tab, with the same Drops and
+  Wanted columns.
 - **Gear** is one row per slot with what you wear. Open a slot and every
-  drop for it from every dungeon is listed, best stat fit first, each with
-  the dungeon it comes from and a star. That is where you compare same-slot
-  drops and pick the one to want.
+  drop for it, from dungeons, raid bosses or both, is listed, best stat fit
+  first, each with where it comes from and a star. That is where you compare
+  same-slot drops and pick the one to want.
 - **Settings**.
 
-Two questions, two answers. "Which key gives me the most upgrades" is the
-Drops column. "Where do I spend my Nebulous Voidcore" is the Wanted column:
-you get one roll a week at most, so it goes where an item you are after
-drops, not where the most random drops would be upgrades. Star a drop to put
-it on the wanted list; it leaves the list by itself once the item turns up
+Two questions, two stars. "Which key or boss gives me the most upgrades" is
+the Drops column. "Where do I spend my Nebulous Voidcore" is yours to
+answer: every drop row has two stars. The first puts the item on your
+wanted list, which the Wanted column counts. The second, purple, marks it as
+a Voidcore target, and a purple star appears on every dungeon or boss row
+where one drops. Both leave the lists by themselves once the item turns up
 equipped or in your bags.
+
+The lists and counts are about direct drops only. What a Voidcore roll would
+be worth is in the tooltips: hold Shift over a drop, a dungeon, a boss or a
+slot and the roll's level, verdict and value appear. A roll is at the Great
+Vault level: a key's vault item level (+10: Myth 1/6), and on a raid boss
+one upgrade track above the difficulty (Normal: Hero 1/6, Heroic: Myth 1/6,
+Mythic: fully upgraded Myth), so a Heroic boss roll and a +10 dungeon roll
+are worth the same Myth 1/6 item.
 
 Premade Groups listings get a badge with the upgrade count (and a star when
 a wanted item drops there), and Mythic Keystone tooltips (your key in the
@@ -28,9 +40,13 @@ bags, keystone links in chat) get the same lines at that key's own level.
 ## What it does automatically
 
 - **Season pool**: read live from the game (`C_ChallengeMode.GetMapTable`).
-- **Loot tables**: scanned from the Adventure Guide at Mythic Keystone
-  difficulty, filtered for your spec exactly like the journal does. No drop
-  table to maintain; rescans when the cache is a week old or the pool changes.
+- **Loot tables**: scanned from the Adventure Guide, dungeons at Mythic
+  Keystone difficulty and every raid boss at each raid difficulty, filtered
+  for your spec exactly like the journal does. No drop table to maintain;
+  rescans when the cache is a week old or the pool changes.
+- **Raids**: the season's raids and their bosses come from the journal's
+  current-season tier; a boss's item level at a difficulty is read from its
+  journal link, so later bosses that drop higher are judged higher.
 - **Drop item levels**: end-of-dungeon and Great Vault levels per key from the
   Mythic+ reward API, with a Season 2 table as fallback until the client has
   loaded the season's reward data.
@@ -48,21 +64,27 @@ bags, keystone links in chat) get the same lines at that key's own level.
 ## What you control
 
 - **Key level** (`+`/`-` in the window or `/sf key 10`): drops are evaluated at
-  that key's end-of-dungeon item level; the Voidcore column uses the vault
-  level of the same key. End-of-dungeon gear stops improving at +10, so one
-  step past it the selector becomes **Voidcore** and evaluates the bonus roll
-  (Myth 1/6) instead. Item tooltips show the item as it drops at the selected
-  key, or as the Voidcore version.
+  that key's end-of-dungeon item level, up to the last key that still raises
+  it (+10). Item tooltips show the item as it drops at the selected key.
+- **Raid difficulty**: the strip on the Raid tab (LFR, Normal, Heroic,
+  Mythic; the lair's World difficulty sits in the LFR slot). Bosses are
+  judged at that difficulty, and so are raid drops on the Gear tab.
+- **Gear tab sources**: the strip on the Gear tab lists drops from M+, Raid
+  or Both (the default).
 - **Spec**: follows your loot spec by default; click the spec button to pin one.
-- **Wanted list** (per spec): star a drop under a dungeon. Wanted items count
-  for their dungeon, show in the Gear tab and in group and keystone tooltips.
+- **Wanted list and Voidcore targets** (per spec): star a drop under a
+  dungeon or a boss. Wanted items count for their dungeon or boss, show in
+  the Gear tab and in group and keystone tooltips. The purple star marks a
+  Voidcore target: the row it drops from gets a purple star, and group and
+  keystone tooltips name it. Excluding an item (right-click) clears its
+  Voidcore star, and marking one lifts an exclusion.
   Export/import the list as text in Settings to share it.
 - **Slots**: in the Gear tab, right-click a slot to cycle Auto / Want / Skip.
   *Want* counts every drop for that slot; *Skip* ignores it (e.g. a crafted
   piece).
 - **Items**: right-click a drop to exclude it (a bad trinket, or something you
   already received from a Voidcore, since those leave the roll pool).
-- **Sorting**: click a column header (Dungeon, Drops, Wanted).
+- **Sorting**: click a column header (Dungeon or Boss, Drops, Wanted).
 - **Stat priority**: per spec, Manual or Auto in Settings. Manual is the
   default: the four stats sit in a row, best first, and start in the Auto
   order; left-click a stat to move it left, right-click to move it right.
@@ -76,11 +98,11 @@ bags, keystone links in chat) get the same lines at that key's own level.
   (the toolbar also shows the resulting stat order). In Auto mode the
   profile in use orders the stats, and every drop gets a weighted value at the selected
   key's item level (primary stat included) that tooltips compare with your
-  equipped item and with the Voidcore version. Same-slot drops sort by that
+  equipped item (and, with Shift, the Voidcore roll). Same-slot drops sort by that
   value. Rename and delete profiles in Settings. Profiles, like everything
   else the addon remembers about you, belong to the logged-in character.
 - **Settings** tab (or `/sf options`): count immediate ilvl-only upgrades,
-  hide empty dungeons, wanted list sharing, weight profiles and stat priority,
+  hide empty dungeons and bosses, wanted list sharing, weight profiles and stat priority,
   dock side (left, right, or free; a free window can be set to move with the
   Dungeons & Raids window for people who move that with another addon),
   auto-show rules, LFG badges, keystone tooltips, scale, manual track shift.
@@ -104,14 +126,16 @@ the two never overlap.
 
 ## Reading the numbers
 
-Each dungeon row shows:
+Each dungeon or boss row shows:
 
-- **Drops**: how many spec-usable items in that dungeon would upgrade a slot
-  as an end-of-dungeon drop. Green means at least one is a *track* upgrade
-  (higher fully-upgraded potential than what you wear), yellow means only
-  immediate item level gains.
-- **Wanted**: how many items from your wanted list drop there. The dungeon
-  tooltip names them and what a Voidcore roll there would be worth.
+- **Drops**: how many spec-usable items there would upgrade a slot as a
+  direct drop (end of dungeon at the key, or off the boss at the
+  difficulty). Green means at least one is a *track* upgrade (higher
+  fully-upgraded potential than what you wear), yellow means only immediate
+  item level gains.
+- **Wanted**: how many items from your wanted list drop there. The tooltip
+  names them; a purple star on the row means a Voidcore target drops there,
+  and Shift in the tooltip lists the targets and the roll's level.
 
 Upgrade classes for an item:
 
@@ -122,9 +146,9 @@ Upgrade classes for an item:
 | wanted | You flagged the item or its slot. |
 | no upgrade | Neither. |
 
-Inside a dungeon's list, an item that is only worth it from a Voidcore roll is
-tagged `VC`. The stats column shows the item's secondaries coloured by how well
-they match your stat priority.
+Inside a dungeon's or boss's list, the stats column shows the item's
+secondaries coloured by how well they match your stat priority. Hold Shift
+over a drop to see how it would do as a Voidcore roll.
 
 ## Commands
 
@@ -165,9 +189,9 @@ lua tests/harness.lua
 | `Tracks.lua` | Upgrade track ladder + self-calibration from equipped items |
 | `Gear.lua` | Equipped gear scan and tooltip parsing |
 | `Season.lua` | Season pool, reward/vault item levels, activity-to-dungeon mapping |
-| `Loot.lua` | Adventure Guide loot scanner and cache |
-| `Evaluate.lua` | Upgrade classification (drop + Voidcore) and dungeon ranking |
-| `UI.lua` | Main window (Dungeons and Gear tabs), docking (neighbour-aware) and Group Finder push |
+| `Loot.lua` | Adventure Guide loot scanner (dungeons, raid bosses per difficulty) and cache |
+| `Evaluate.lua` | Upgrade classification (drop, and the Voidcore roll for tooltips), dungeon and boss ranking |
+| `UI.lua` | Main window (Dungeons, Raid and Gear tabs), docking (neighbour-aware) and Group Finder push |
 | `Options.lua` | Settings tab and the Settings > AddOns entry |
 | `LFGHook.lua` | Premade Groups badges and tooltip lines |
 
