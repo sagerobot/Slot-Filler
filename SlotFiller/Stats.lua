@@ -1,8 +1,10 @@
 -- Slot Filler: secondary stat priority and stat weights.
 -- Three sources, best first:
 --   manual  - an order the user set per spec in the options
---   weights - a Pawn scale string imported per spec (real weights, so drops
---             also get a weighted value that includes the primary stat)
+--   weights - the active weight profile for the spec: a Pawn scale string
+--             imported and saved under a name (real weights, so drops also
+--             get a weighted value that includes the primary stat). A spec
+--             can hold several profiles, e.g. Raid and Mythic+, and switch.
 --   gear    - the stat you stacked most on equipped items ranks first
 -- The priority orders drops for the same slot and colours the stats column by
 -- how well a drop matches; weights add a value comparison in tooltips.
@@ -24,12 +26,14 @@ end
 -- Other stats a Pawn scale can weight. An item carries one primary stat for
 -- you; the highest of the three is taken.
 ns.EXTRA_STATS = {
-    { key = "PRIMARY", mods = { "ITEM_MOD_INTELLECT_SHORT", "ITEM_MOD_AGILITY_SHORT", "ITEM_MOD_STRENGTH_SHORT" } },
-    { key = "STAMINA", mods = { "ITEM_MOD_STAMINA_SHORT" } },
-    { key = "LEECH",   mods = { "ITEM_MOD_CR_LIFESTEAL_SHORT" } },
-    { key = "AVOID",   mods = { "ITEM_MOD_CR_AVOIDANCE_SHORT" } },
-    { key = "SPEED",   mods = { "ITEM_MOD_CR_SPEED_SHORT" } },
+    { key = "PRIMARY", name = "Primary",   mods = { "ITEM_MOD_INTELLECT_SHORT", "ITEM_MOD_AGILITY_SHORT", "ITEM_MOD_STRENGTH_SHORT" } },
+    { key = "STAMINA", name = "Stamina",   mods = { "ITEM_MOD_STAMINA_SHORT" } },
+    { key = "LEECH",   name = "Leech",     mods = { "ITEM_MOD_CR_LIFESTEAL_SHORT" } },
+    { key = "AVOID",   name = "Avoidance", mods = { "ITEM_MOD_CR_AVOIDANCE_SHORT" } },
+    { key = "SPEED",   name = "Speed",     mods = { "ITEM_MOD_CR_SPEED_SHORT" } },
 }
+ns.EXTRA_STAT_BY_KEY = {}
+for _, e in ipairs(ns.EXTRA_STATS) do ns.EXTRA_STAT_BY_KEY[e.key] = e end
 
 -- Pawn stat names (lower-cased) -> our keys.
 ns.PAWN_STAT_KEYS = {
@@ -42,7 +46,9 @@ ns.PAWN_STAT_KEYS = {
 local RANK_WEIGHT = { 1, 0.75, 0.5, 0.25 }
 
 local statCache = {}  -- link -> { key = amount } | false (nothing usable)
-local valueCache = {} -- link -> weighted value under the current scale
+-- scale -> { link -> value | false }. Keyed by the scale table itself, so
+-- switching profiles or specs never serves a value from another scale.
+local valueCache = setmetatable({}, { __mode = "k" })
 
 local function Num(v)
     if type(v) == "number" and not ns.issecret(v) and v > 0 then return v end
@@ -86,11 +92,14 @@ end
 -- Pawn scale strings
 -- ( Pawn: v1: "Name": Class=Shaman, Spec=Restoration, Intellect=81.97, CritRating=46.19, ... )
 -------------------------------------------------------------------------------
+local PAWN_CLOSED = [[Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.-)%s*%)%s*$]]
+local PAWN_OPEN   = [[Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.*)$]]
+
 function ns:ParsePawnString(text)
     if type(text) ~= "string" then return nil, "empty" end
-    local version, name, body = text:match('Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.-)%s*%)%s*$')
+    local version, name, body = text:match(PAWN_CLOSED)
     if not body then
-        version, name, body = text:match('Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.*)$')
+        version, name, body = text:match(PAWN_OPEN)
     end
     if not body then return nil, "not a Pawn string" end
     local scale = { name = name, version = tonumber(version), weights = {} }
@@ -106,7 +115,10 @@ function ns:ParsePawnString(text)
             local ours = self.PAWN_STAT_KEYS[lower]
             local n = tonumber(value)
             if ours and n then
-                if not scale.weights[ours] or n > scale.weights[ours] then scale.weights[ours] = n end
+                if not scale.weights[ours] or n > scale.weights[ours] then
+                    scale.weights[ours] = n
+                    if ours == "PRIMARY" then scale.primary = key end -- "Intellect"
+                end
                 any = true
             end
         end
@@ -115,31 +127,159 @@ function ns:ParsePawnString(text)
     return scale
 end
 
--- Imported scale for the evaluated spec, or nil.
-function ns:GetStatWeights()
-    local specID = self:GetEvalSpecID()
-    local scale = self.db and self.db.statWeights and specID and self.db.statWeights[specID]
-    if type(scale) == "table" and type(scale.weights) == "table" then return scale end
+-------------------------------------------------------------------------------
+-- Weight profiles. Every imported scale is kept per spec under a name, so a
+-- healer can hold a raid set and a Mythic+ set and switch between them:
+--   db.statProfiles[specID] = { scale, ... }
+--       scale = { name, pawnName, class, spec, primary, imported, weights = { CRIT = n, ... } }
+--   db.statProfile[specID]  = index of the active one; nil = none (rank by gear)
+-------------------------------------------------------------------------------
+local function ProfileList(self, specID)
+    specID = specID or self:GetEvalSpecID()
+    if not specID or not self.cdb then return nil end
+    self.cdb.statProfiles = self.cdb.statProfiles or {}
+    local list = self.cdb.statProfiles[specID]
+    if not list then list = {}; self.cdb.statProfiles[specID] = list end
+    return list, specID
+end
+
+local function CleanName(name)
+    if type(name) ~= "string" then return "" end
+    return (name:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Saved profiles for the evaluated spec (or specID); may be empty.
+function ns:GetStatProfiles(specID)
+    return ProfileList(self, specID) or {}
+end
+
+-- index, scale of the active profile for the evaluated spec, or nil.
+function ns:GetActiveStatProfile()
+    local list, specID = ProfileList(self)
+    if not list then return nil end
+    local i = self.cdb.statProfile and self.cdb.statProfile[specID]
+    local scale = i and list[i]
+    if type(scale) == "table" and type(scale.weights) == "table" then return i, scale end
     return nil
 end
 
--- scale table from ParsePawnString, or nil to clear, for the evaluated spec.
-function ns:SetStatWeights(scale)
-    local specID = self:GetEvalSpecID()
-    if not specID or not self.db then return end
-    self.db.statWeights = self.db.statWeights or {}
-    self.db.statWeights[specID] = scale
-    wipe(valueCache)
-    self:Fire("SETTINGS_CHANGED")
+-- Active scale for the evaluated spec, or nil.
+function ns:GetStatWeights()
+    local _, scale = self:GetActiveStatProfile()
+    return scale
 end
 
--- Parses and stores a Pawn string for the evaluated spec. Returns the scale,
--- or nil and a reason.
-function ns:ImportPawnString(text)
+-- "Raid", or nil when no profile is active.
+function ns:StatProfileName()
+    local _, scale = self:GetActiveStatProfile()
+    return scale and scale.name or nil
+end
+
+-- Switches the evaluated spec to profile `index`; nil = none.
+function ns:SetActiveStatProfile(index)
+    local list, specID = ProfileList(self)
+    if not list then return false end
+    if index ~= nil and not list[index] then return false end
+    self.cdb.statProfile = self.cdb.statProfile or {}
+    self.cdb.statProfile[specID] = index
+    self:Fire("SETTINGS_CHANGED")
+    return true
+end
+
+-- Profile by 1-based index or by name (case-insensitive): index, scale or nil.
+function ns:FindStatProfile(what)
+    local list = self:GetStatProfiles()
+    local n = tonumber(what)
+    if n and list[n] then return n, list[n] end
+    local lower = CleanName(what):lower()
+    if lower ~= "" then
+        for i, scale in ipairs(list) do
+            if tostring(scale.name):lower() == lower then return i, scale end
+        end
+    end
+    return nil
+end
+
+-- Saves a parsed scale as a new profile for the evaluated spec, named `name`
+-- (default: the Pawn scale's own name), and switches to it. Returns index, scale.
+function ns:AddStatProfile(scale, name)
+    local list = ProfileList(self)
+    if not list or type(scale) ~= "table" or type(scale.weights) ~= "table" then return nil end
+    scale.pawnName = scale.pawnName or scale.name
+    name = CleanName(name)
+    if name == "" then name = CleanName(scale.pawnName) end
+    if name == "" then name = "Profile " .. (#list + 1) end
+    scale.name = name
+    scale.imported = scale.imported or time()
+    list[#list + 1] = scale
+    self:SetActiveStatProfile(#list)
+    return #list, scale
+end
+
+function ns:RenameStatProfile(index, name)
+    local list = ProfileList(self)
+    local scale = list and list[index]
+    name = CleanName(name)
+    if not scale or name == "" then return false end
+    scale.name = name
+    self:Fire("SETTINGS_CHANGED")
+    return true
+end
+
+-- Removes a profile. Deleting the active one leaves the spec with none; an
+-- active profile after it keeps being active (its index shifts down).
+function ns:DeleteStatProfile(index)
+    local list, specID = ProfileList(self)
+    if not list or not list[index] then return false end
+    table.remove(list, index)
+    local active = self.cdb.statProfile and self.cdb.statProfile[specID]
+    if active then
+        if active == index then
+            active = nil
+        elseif active > index then
+            active = active - 1
+        end
+        self.cdb.statProfile[specID] = active
+    end
+    self:Fire("SETTINGS_CHANGED")
+    return true
+end
+
+-- nil = use no profile for the evaluated spec (the saved profiles stay);
+-- a scale table is saved as a new profile and switched to.
+function ns:SetStatWeights(scale)
+    if scale == nil then
+        self:SetActiveStatProfile(nil)
+    else
+        self:AddStatProfile(scale)
+    end
+end
+
+-- Parses a Pawn string and saves it as a new, active profile for the
+-- evaluated spec. Returns the scale and its index, or nil and a reason.
+function ns:ImportPawnString(text, name)
     local scale, err = self:ParsePawnString(text)
     if not scale then return nil, err end
-    self:SetStatWeights(scale)
-    return scale
+    local index = self:AddStatProfile(scale, name)
+    if not index then return nil, "no spec to save it for" end
+    return scale, index
+end
+
+-- Chat listing for /sf pawn.
+function ns:PrintStatProfiles()
+    local specName = (self:SpecName(self:GetEvalSpecID())) or "this spec"
+    local list = self:GetStatProfiles()
+    local active = self:GetActiveStatProfile()
+    if #list == 0 then
+        self:Print("No weight profiles saved for " .. specName .. ". Paste a Pawn string after /sf pawn to add one.")
+        return
+    end
+    self:Print(string.format("Weight profiles for %s (%s):", specName,
+        active and ("using " .. tostring(list[active].name)) or "none in use, stats ranked from gear"))
+    for i, scale in ipairs(list) do
+        print(string.format("  %s%d. %s|r  %s", i == active and "|cffffffff" or "|cffaaaaaa", i, tostring(scale.name), self:StatWeightsText(scale, true)))
+    end
+    print("  /sf pawn use <name|n>, rename <n> <new name>, delete <name|n>, clear")
 end
 
 -------------------------------------------------------------------------------
@@ -190,7 +330,7 @@ end
 -- ("manual" | "weights" | "gear") or nil when there is nothing to go on.
 function ns:GetStatPriority()
     local specID = self:GetEvalSpecID()
-    local manual = self.db and self.db.statPrio and specID and self.db.statPrio[specID]
+    local manual = self.cdb and self.cdb.statPrio and specID and self.cdb.statPrio[specID]
     if ValidOrder(manual) then return manual, "manual" end
     local scale = self:GetStatWeights()
     if scale then return StableOrder(self, scale.weights), "weights" end
@@ -202,10 +342,10 @@ end
 -- order = list of the four stat keys, or nil to fall back to weights / gear.
 function ns:SetStatPriority(order)
     local specID = self:GetEvalSpecID()
-    if not specID or not self.db then return end
+    if not specID or not self.cdb then return end
     if order ~= nil and not ValidOrder(order) then return end
-    self.db.statPrio = self.db.statPrio or {}
-    self.db.statPrio[specID] = order
+    self.cdb.statPrio = self.cdb.statPrio or {}
+    self.cdb.statPrio[specID] = order
     self:Fire("SETTINGS_CHANGED")
 end
 
@@ -253,13 +393,15 @@ end
 -- Weighted value of an item link under a scale (every stat it maps), or nil.
 function ns:ItemValue(link, scale)
     if not scale or not scale.weights or type(link) ~= "string" then return nil end
-    local cached = valueCache[link]
+    local perScale = valueCache[scale]
+    if not perScale then perScale = {}; valueCache[scale] = perScale end
+    local cached = perScale[link]
     if cached ~= nil then return cached or nil end
     local stats = self:ItemStats(link)
     if not stats then return nil end
     local total = 0
     for key, v in pairs(stats) do total = total + v * (scale.weights[key] or 0) end
-    valueCache[link] = total
+    perScale[link] = total
     return total
 end
 
@@ -298,10 +440,41 @@ function ns:StatPriorityText(order, long)
     return table.concat(parts, " > ")
 end
 
+-- A scale's weights, largest first: "Intellect 82, Critical Strike 46, ..."
+-- (short = "Int 82, Cri 46, ..."). The primary stat is named as the Pawn
+-- string named it.
+function ns:StatWeightsText(scale, short)
+    if not scale or type(scale.weights) ~= "table" then return "" end
+    local keys = {}
+    for k, v in pairs(scale.weights) do
+        if type(v) == "number" and v >= 0.05 then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b)
+        if scale.weights[a] ~= scale.weights[b] then return scale.weights[a] > scale.weights[b] end
+        return a < b
+    end)
+    local parts = {}
+    for _, k in ipairs(keys) do
+        local label
+        local s = self.STAT_BY_KEY[k]
+        if s then
+            label = short and s.short or s.name
+        elseif k == "PRIMARY" and scale.primary then
+            label = short and scale.primary:sub(1, 3) or scale.primary
+        else
+            local e = self.EXTRA_STAT_BY_KEY[k]
+            label = e and (short and e.name:sub(1, 3) or e.name) or k
+        end
+        local v = scale.weights[k]
+        parts[#parts + 1] = string.format(v >= 10 and "%s %.0f" or "%s %.1f", label, v)
+    end
+    return table.concat(parts, ", ")
+end
+
 -- Short description of where the priority comes from.
 function ns:StatSourceText(source, scale)
     if source == "manual" then return "manual" end
-    if source == "weights" then return "Pawn: " .. tostring(scale and scale.name or "?") end
+    if source == "weights" then return "profile: " .. tostring(scale and scale.name or "?") end
     if source == "gear" then return "from gear" end
     return "not set"
 end

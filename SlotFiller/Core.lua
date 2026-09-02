@@ -18,10 +18,6 @@ ns.DEFAULTS = {
         linkBonus = {},
         -- Count immediate item level upgrades that are not a track upgrade.
         countIlvlUpgrades = true,
-        -- Manual secondary stat order per spec: [specID] = { "HASTE", ... }; absent = weights or gear.
-        statPrio = {},
-        -- Imported Pawn scale per spec: [specID] = { name, class, spec, weights = { CRIT = n, ... } }.
-        statWeights = {},
         -- Sorting: "upgrades" | "wanted" | "name"
         sortMode = "upgrades",
         -- Gear tab sorting: "slot" | "upgrades" | "wanted"
@@ -68,6 +64,12 @@ ns.DEFAULTS = {
         lootCache = {},
         -- Spec the window evaluates for (nil = follow loot spec).
         evalSpecID = nil,
+        -- Manual secondary stat order per spec: [specID] = { "HASTE", ... }; absent = weights or gear.
+        statPrio = {},
+        -- Stat weight profiles per spec: [specID] = { { name, pawnName, class, spec, weights = { CRIT = n, ... } }, ... }.
+        statProfiles = {},
+        -- Profile in use per spec: [specID] = index into statProfiles; absent = rank stats from gear.
+        statProfile = {},
     },
 }
 
@@ -226,15 +228,39 @@ SlashCmdList.SLOTFILLER = function(msg)
         ns:PrintStatus()
     elseif cmd == "link" or cmd == "links" then
         ns:PrintLinkDiagnostics()
-    elseif cmd == "pawn" then
+    elseif cmd == "pawn" or cmd == "weights" then
         local text = raw:match("^%S+%s*(.-)$") or ""
-        if text == "" or text == "clear" then
+        local sub, arg = text:match("^(%S+)%s*(.-)$")
+        sub = sub and sub:lower() or ""
+        local specName = (ns:SpecName(ns:GetEvalSpecID())) or "this spec"
+        if text == "" or sub == "list" then
+            ns:PrintStatProfiles()
+        elseif sub == "clear" or sub == "none" then
             ns:SetStatWeights(nil)
-            ns:Print("Stat weights cleared for", (ns:SpecName(ns:GetEvalSpecID())) or "this spec")
+            ns:Print("No weight profile in use for " .. specName .. "; stats are ranked from your gear. Saved profiles are kept.")
+        elseif sub == "use" or sub == "delete" or sub == "rename" then
+            local what, newName = arg, nil
+            if sub == "rename" then what, newName = arg:match("^(%S+)%s+(.-)%s*$") end
+            local i, scale = ns:FindStatProfile(what)
+            if sub == "rename" and not (what and newName) then
+                ns:Print("Usage: /sf pawn rename <n> <new name>")
+            elseif not i then
+                ns:Print(string.format("No weight profile called \"%s\" for %s. /sf pawn lists them.", tostring(what or arg), specName))
+            elseif sub == "use" then
+                ns:SetActiveStatProfile(i)
+                ns:Print(string.format("Using weight profile \"%s\" for %s.", scale.name, specName))
+            elseif sub == "delete" then
+                ns:DeleteStatProfile(i)
+                ns:Print(string.format("Deleted weight profile \"%s\" for %s.", scale.name, specName))
+            elseif ns:RenameStatProfile(i, newName) then
+                ns:Print(string.format("Renamed weight profile to \"%s\".", scale.name))
+            else
+                ns:Print("Usage: /sf pawn rename <n> <new name>")
+            end
         else
             local scale, err = ns:ImportPawnString(text)
             if scale then
-                ns:Print(string.format("Imported Pawn scale \"%s\" for %s.", scale.name or "?", (ns:SpecName(ns:GetEvalSpecID())) or "this spec"))
+                ns:Print(string.format("Saved Pawn scale \"%s\" as weight profile \"%s\" for %s and switched to it.", scale.pawnName or "?", scale.name, specName))
             else
                 ns:Print("Could not read that Pawn string:", err)
             end
@@ -265,7 +291,8 @@ SlashCmdList.SLOTFILLER = function(msg)
         print("  /sf options    open settings")
         print("  /sf status     print what the addon currently knows")
         print("  /sf link       diagnostics for item tooltips at the selected key")
-        print("  /sf pawn <string>   import a Pawn scale for the current spec (/sf pawn clear)")
+        print("  /sf pawn <string>   save a Pawn scale as a weight profile for the current spec and use it")
+        print("  /sf pawn       list weight profiles: use <name>, rename <n> <name>, delete <name>, clear")
         print("  /sf reset overrides|cache|all")
         print("  /sf debug      toggle debug output")
     end

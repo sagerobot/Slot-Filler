@@ -65,13 +65,18 @@ bags, keystone links in chat) get the same lines at that key's own level.
 - **Stat priority**: the learned order can be overridden per spec in the
   options (left-click a stat to move it up, right-click to move it down, or
   go back to weights / gear).
-- **Pawn weights**: paste a Pawn scale string (from Pawn, Raidbots or a
-  guide) into the options, or `/sf pawn <string>`. Real weights then order
-  the stats, and every drop gets a weighted value at the selected key's item
-  level (primary stat included) that tooltips compare with your equipped item
-  and with the Voidcore version. Same-slot drops sort by that value.
+- **Weight profiles**: paste a Pawn scale string (from Pawn, Raidbots or a
+  guide) into Settings, or `/sf pawn <string>`. Each import is saved as a
+  named profile for the spec, so a healer can keep a Raid and a Mythic+
+  profile and switch between them with the Weights button in the window
+  (the toolbar also shows the resulting stat order). The profile in use
+  orders the stats, and every drop gets a weighted value at the selected
+  key's item level (primary stat included) that tooltips compare with your
+  equipped item and with the Voidcore version. Same-slot drops sort by that
+  value. Rename and delete profiles in Settings. Profiles, like everything
+  else the addon remembers about you, belong to the logged-in character.
 - **Settings** tab (or `/sf options`): count immediate ilvl-only upgrades,
-  hide empty dungeons, wanted list sharing, stat priority and Pawn weights,
+  hide empty dungeons, wanted list sharing, weight profiles and stat priority,
   dock side, auto-show rules, LFG badges, keystone tooltips, scale, manual
   track shift.
 
@@ -123,7 +128,8 @@ they match your stat priority.
 /sf key <n>         set the key level
 /sf rescan          rescan loot tables from the Adventure Guide
 /sf options         open settings
-/sf pawn <string>   import a Pawn scale for the current spec (/sf pawn clear)
+/sf pawn <string>   save a Pawn scale as a weight profile for the current spec and use it
+/sf pawn            list the spec's profiles: use <name>, rename <n> <name>, delete <name>, clear
 /sf status          print what the addon knows (season, tracks, gear, cache)
 /sf reset overrides|cache|all
 /sf debug           toggle debug output

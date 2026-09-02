@@ -13,7 +13,7 @@ local WIDTH = 390
 local FREE_HEIGHT = 520
 local PAD = 8            -- content inset from the window edge
 local TITLE_H = 25       -- EllesmereUI title band height
-local TOOLBAR_H = 44     -- spec/key controls + info line, shared by the list tabs
+local TOOLBAR_H = 68     -- spec/key row, weights row and the info line, shared by the list tabs
 local TAB_H, TAB_W = 22, 96
 local ROW_H = 28         -- dungeon / slot row
 local ITEM_H = 20        -- drop row under an expanded row
@@ -149,7 +149,146 @@ local function SetStar(tex, on)
     end
 end
 
-ns.UI = { TextButton = TextButton, Check = Check, Tip = Tip }
+-------------------------------------------------------------------------------
+-- Dropdown: a block button showing the current choice; clicking it opens a
+-- flat menu underneath. entries() returns { { text, checked, onClick }, ... }.
+-- One menu frame serves every dropdown; it closes on a click anywhere else.
+-------------------------------------------------------------------------------
+local menu
+local MENU_ROW_H = 20
+
+local function CloseMenu()
+    if menu and menu:IsShown() then menu:Hide() end
+end
+
+local function MenuRow(i)
+    local row = menu.rows[i]
+    if row then return row end
+    row = CreateFrame("Button", nil, menu)
+    row:SetHeight(MENU_ROW_H)
+    row:SetPoint("TOPLEFT", 1, -(1 + (i - 1) * MENU_ROW_H))
+    row:SetPoint("TOPRIGHT", -1, -(1 + (i - 1) * MENU_ROW_H))
+    local hover = row:CreateTexture(nil, "HIGHLIGHT")
+    hover:SetAllPoints()
+    hover:SetColorTexture(1, 1, 1, 0.1)
+    row.Mark = row:CreateTexture(nil, "ARTWORK")
+    row.Mark:SetSize(6, 6)
+    row.Mark:SetPoint("LEFT", 8, 0)
+    row.Text = Style.Text(row, 11)
+    row.Text:SetPoint("LEFT", 20, 0)
+    row.Text:SetPoint("RIGHT", -8, 0)
+    row.Text:SetJustifyH("LEFT")
+    row.Text:SetWordWrap(false)
+    row:SetScript("OnClick", function(self)
+        CloseMenu()
+        if self.entry and self.entry.onClick then self.entry.onClick() end
+    end)
+    menu.rows[i] = row
+    return row
+end
+
+local function OpenMenu(owner, entries)
+    if not menu then
+        menu = CreateFrame("Frame", nil, frame or UIParent)
+        menu:SetFrameStrata("HIGH")
+        menu:EnableMouse(true)
+        menu:Hide()
+        menu.rows = {}
+        Style.Panel(menu)
+        menu:RegisterEvent("GLOBAL_MOUSE_DOWN")
+        menu:SetScript("OnEvent", function(self)
+            if self:IsShown() and not self:IsMouseOver() and not (self.owner and self.owner:IsMouseOver()) then
+                self:Hide()
+            end
+        end)
+        menu:SetScript("OnHide", function(self) self.owner = nil end)
+    end
+    if menu:IsShown() and menu.owner == owner then CloseMenu(); return end
+    menu.owner = owner
+    local r, g, b = Style.Accent()
+    local n = #entries
+    for i, entry in ipairs(entries) do
+        local row = MenuRow(i)
+        row.entry = entry
+        row.Text:SetText(entry.text or "")
+        row.Text:SetAlpha(entry.checked and 1 or 0.8)
+        row.Mark:SetColorTexture(r, g, b, 1)
+        row.Mark:SetShown(entry.checked and true or false)
+        row:Show()
+    end
+    for i = n + 1, #menu.rows do menu.rows[i]:Hide() end
+    menu:ClearAllPoints()
+    menu:SetPoint("TOPLEFT", owner, "BOTTOMLEFT", 0, -1)
+    menu:SetSize(math.max(owner:GetWidth() or 0, 120), n * MENU_ROW_H + 2)
+    menu:Show()
+end
+
+-- w = nil leaves the width to the caller's anchors.
+local function Dropdown(parent, w, h, entries)
+    local b = CreateFrame("Button", nil, parent)
+    if w then b:SetWidth(w) end
+    b:SetHeight(h or 22)
+    b.Arrow = b:CreateTexture(nil, "OVERLAY")
+    b.Arrow:SetAtlas(ARROW_ATLAS)
+    b.Arrow:SetSize(12, 9)
+    b.Arrow:SetPoint("RIGHT", -6, 0)
+    b.Arrow:SetVertexColor(1, 1, 1, 0.7)
+    b.Text = Style.Text(b, 11)
+    b.Text:SetPoint("LEFT", 6, 0)
+    b.Text:SetPoint("RIGHT", b.Arrow, "LEFT", -4, 0)
+    b.Text:SetJustifyH("LEFT")
+    b.Text:SetWordWrap(false)
+    Style.Button(b, { "Arrow" })
+    b.entries = entries
+    b:SetScript("OnClick", function(self) OpenMenu(self, self.entries()) end)
+    b:HookScript("OnHide", function(self) if menu and menu.owner == self then CloseMenu() end end)
+    return b
+end
+
+-- Weight profile picker (toolbar and Settings): the profiles saved for the
+-- evaluated spec on this character, plus "None".
+local function StatProfileEntries()
+    local active = ns:GetActiveStatProfile()
+    local entries = {}
+    for i, scale in ipairs(ns:GetStatProfiles()) do
+        entries[#entries + 1] = { text = tostring(scale.name), checked = active == i, onClick = function() ns:SetActiveStatProfile(i) end }
+    end
+    entries[#entries + 1] = { text = "None |cff888888(rank stats from gear)|r", checked = active == nil, onClick = function() ns:SetActiveStatProfile(nil) end }
+    return entries
+end
+
+local function RefreshStatProfileButton(b)
+    local name = ns:StatProfileName()
+    b.Text:SetText("|cffaaaaaaWeights:|r " .. (name or "|cff888888none|r"))
+end
+
+local function StatProfileDropdown(parent, w, h)
+    local b = Dropdown(parent, w, h, StatProfileEntries)
+    b:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+        GameTooltip:AddLine("Stat weights")
+        local _, scale = ns:GetActiveStatProfile()
+        if scale then
+            GameTooltip:AddLine(tostring(scale.name), 1, 1, 1)
+            GameTooltip:AddLine(ns:StatWeightsText(scale), 0.8, 0.8, 0.8, true)
+            if scale.pawnName and scale.pawnName ~= scale.name then
+                GameTooltip:AddLine("Pawn scale: " .. tostring(scale.pawnName), 0.6, 0.6, 0.6, true)
+            end
+        else
+            GameTooltip:AddLine("No profile in use: stats are ranked by how much of each your equipped gear carries.", 0.8, 0.8, 0.8, true)
+        end
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Click to switch between the weight profiles saved for this spec. Every Pawn string imported in Settings becomes one, so you can keep a Raid and a Mythic+ profile and swap here.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    b:HookScript("OnLeave", function() GameTooltip:Hide() end)
+    RefreshStatProfileButton(b)
+    return b
+end
+
+ns.UI = { TextButton = TextButton, Check = Check, Tip = Tip, Dropdown = Dropdown, CloseMenu = CloseMenu,
+    StatProfileDropdown = StatProfileDropdown, RefreshStatProfileButton = RefreshStatProfileButton,
+    IsMenuShown = function() return (menu and menu:IsShown()) and true or false end }
 
 -- Column header tabs shared by both list tabs: a full-width first tab plus
 -- fixed Drops and Wanted columns. defs = { { id, text, width|nil }, ... }
@@ -253,9 +392,19 @@ local function BuildToolbar()
             "Drops are judged at the end-of-dungeon item level of this key. One step past the last key that still raises it, the selector becomes Voidcore and judges the bonus roll (vault item level) instead.")
     end
 
+    local weights = StatProfileDropdown(bar, 176, 22)
+    weights:SetPoint("TOPLEFT", 0, -26)
+    bar.WeightsButton = weights
+    local prio = Style.Text(bar, 11, 1, 1, 1, 0.6)
+    prio:SetPoint("LEFT", weights, "RIGHT", 8, 0)
+    prio:SetPoint("RIGHT", bar, "RIGHT", -2, 0)
+    prio:SetJustifyH("LEFT")
+    prio:SetWordWrap(false)
+    bar.Prio = prio
+
     local info = Style.Text(bar, 10, 1, 1, 1, 0.6)
-    info:SetPoint("TOPLEFT", 2, -28)
-    info:SetPoint("TOPRIGHT", -2, -28)
+    info:SetPoint("TOPLEFT", 2, -54)
+    info:SetPoint("TOPRIGHT", -2, -54)
     info:SetJustifyH("LEFT")
     info:SetWordWrap(false)
     bar.Info = info
@@ -424,6 +573,7 @@ function ns:ShowPage(key)
     for k, p in pairs(frame.Pages) do
         if k == key then p:Show() else p:Hide() end
     end
+    CloseMenu()
     if key == "settings" then frame.Toolbar:Hide() else frame.Toolbar:Show() end
     frame.page = key
     Style.SelectTab(frame.TabRow, key)
@@ -918,6 +1068,10 @@ local function RefreshToolbar()
     bar.SpecButton.Text:SetText(self.cdb.evalSpecID and specName or (specName .. " |cff888888(loot spec)|r"))
     bar.KeyText:SetText(self:TargetLabel())
     bar.KeyPlus:SetEnabled(not self.db.voidcoreMode)
+    RefreshStatProfileButton(bar.WeightsButton)
+    local order, source = self:GetStatPriority()
+    bar.Prio:SetText(order and (self:StatPriorityText(order) .. (source == "manual" and " |cff888888(manual order)|r" or ""))
+        or "|cff888888no stat priority yet|r")
     local ctx = self.dropCtx or self:GetDropContext()
     bar.Info:SetText(InfoText(ctx))
 end
@@ -1455,6 +1609,7 @@ function ns:PrintStatus()
         print(string.format("    %s (%s): %d-%d, %d steps", t.key, t.localizedName or "?", t.min, t.max, t.steps))
     end
     print("  Spec:", self:SpecName(self:GetEvalSpecID()), self.cdb.evalSpecID and "(manual)" or "(loot spec)")
+    print("  Weights:", self:StatProfileName() or "none", string.format("(%d profile(s) saved for this spec on this character)", #self:GetStatProfiles()))
     print("  Style:", Style.mode or "undecided", Style.IsSkinned() and "(EllesmereUI skin)" or "")
     print("  Wanted:", table.concat(self:WantedItemIDs(), ", "))
     if self.loot then

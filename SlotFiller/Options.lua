@@ -128,6 +128,84 @@ function ns:BuildSettingsPage(page)
     end)
     Hint("Star drops in the Dungeons tab to build the list. Items leave it by themselves once they turn up equipped or in your bags.")
 
+    Header("Stat weights")
+    local profRow = Row(28)
+    local profLabel = RowLabel(profRow, "Profile")
+    local profDelete = ns.UI.TextButton(profRow, "Delete", 56, 20)
+    profDelete:SetPoint("RIGHT", -6, 0)
+    local profDrop = ns.UI.StatProfileDropdown(profRow, nil, 20)
+    profDrop:SetPoint("LEFT", profLabel, "RIGHT", 12, 0)
+    profDrop:SetPoint("RIGHT", profDelete, "LEFT", -6, 0)
+    panel.profileDrop, panel.profileDelete = profDrop, profDelete
+    profDelete:SetScript("OnClick", function()
+        local i, scale = ns:GetActiveStatProfile()
+        if i then
+            ns:DeleteStatProfile(i)
+            ns:Print(string.format("Deleted weight profile \"%s\" for %s.", tostring(scale.name), (ns:SpecName(ns:GetEvalSpecID())) or "this spec"))
+        end
+        ns:RefreshOptionsPanel()
+    end)
+    ns.UI.Tip(profDelete, "ANCHOR_RIGHT", "Delete profile",
+        "Forget the selected profile. Stats are ranked from your gear until you pick another one.")
+
+    local pawnRow = Row(28)
+    local pawnLabel = RowLabel(pawnRow, "Pawn string")
+    local pawnImport = ns.UI.TextButton(pawnRow, "Import", 56, 20)
+    pawnImport:SetPoint("RIGHT", -6, 0)
+    local pawnBox = CreateFrame("EditBox", nil, pawnRow, "InputBoxTemplate")
+    pawnBox:SetAutoFocus(false)
+    pawnBox:SetHeight(20)
+    pawnBox:SetPoint("LEFT", pawnLabel, "RIGHT", 12, 0)
+    pawnBox:SetPoint("RIGHT", pawnImport, "LEFT", -6, 0)
+    Style.EditBox(pawnBox)
+    panel.pawnBox = pawnBox
+    local function ImportPawn()
+        local scale, err = ns:ImportPawnString(pawnBox:GetText() or "")
+        local specName = ns:SpecName(ns:GetEvalSpecID())
+        if scale then
+            pawnBox:SetText("")
+            pawnBox:ClearFocus()
+            ns:Print(string.format("Saved Pawn scale \"%s\" as weight profile \"%s\" for %s and switched to it.", scale.pawnName or "?", scale.name, specName or "this spec"))
+            if scale.spec and specName and scale.spec:lower() ~= tostring(specName):lower() then
+                ns:Print(string.format("Note: the scale says %s %s; it is applied to %s.", scale.class or "", scale.spec, specName))
+            end
+        else
+            ns:Print("Could not read that Pawn string:", err)
+        end
+        ns:RefreshOptionsPanel()
+    end
+    pawnImport:SetScript("OnClick", ImportPawn)
+    pawnBox:SetScript("OnEnterPressed", ImportPawn)
+    pawnBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    ns.UI.Tip(pawnBox, "ANCHOR_RIGHT", "Pawn string",
+        "Paste a Pawn scale string for this spec (from Pawn, Raidbots or a guide) and press Enter. It is saved as a new profile named after the scale and used right away: its weights order the stats, and tooltips compare a drop's weighted value with your equipped item.")
+
+    local nameRow = Row(28)
+    local nameLabel = RowLabel(nameRow, "Name")
+    local nameRename = ns.UI.TextButton(nameRow, "Rename", 56, 20)
+    nameRename:SetPoint("RIGHT", -6, 0)
+    local nameBox = CreateFrame("EditBox", nil, nameRow, "InputBoxTemplate")
+    nameBox:SetAutoFocus(false)
+    nameBox:SetHeight(20)
+    nameBox:SetPoint("LEFT", nameLabel, "RIGHT", 12, 0)
+    nameBox:SetPoint("RIGHT", nameRename, "LEFT", -6, 0)
+    Style.EditBox(nameBox)
+    panel.nameBox, panel.nameRename = nameBox, nameRename
+    local function RenameProfile()
+        local i, scale = ns:GetActiveStatProfile()
+        nameBox:ClearFocus()
+        if i and ns:RenameStatProfile(i, nameBox:GetText() or "") then
+            ns:Print(string.format("Renamed weight profile to \"%s\".", scale.name))
+        end
+        ns:RefreshOptionsPanel()
+    end
+    nameRename:SetScript("OnClick", RenameProfile)
+    nameBox:SetScript("OnEnterPressed", RenameProfile)
+    nameBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); ns:RefreshOptionsPanel() end)
+    ns.UI.Tip(nameBox, "ANCHOR_RIGHT", "Profile name",
+        "Rename the selected profile: type a name and press Enter. Short names such as Raid or M+ read best in the window.")
+    Hint("Keep one profile per situation, say Raid and Mythic+, and switch with the Weights button in the window or here. Profiles belong to this character and spec.", 30)
+
     Header("Stat priority")
     local prioRow = Row(26)
     RowLabel(prioRow, "Best first")
@@ -157,43 +235,7 @@ function ns:BuildSettingsPage(page)
     learn:SetPoint("RIGHT", -6, 0)
     learn:SetScript("OnClick", function() ns:SetStatPriority(nil); ns:RefreshOptionsPanel() end)
     ns.UI.Tip(learn, "ANCHOR_RIGHT", "Use weights / gear",
-        "Drop the manual order for this spec: order by the imported Pawn weights, or without them by how much of each stat you have equipped.")
-
-    local pawnRow = Row(28)
-    local pawnLabel = RowLabel(pawnRow, "Pawn string")
-    local pawnClear = ns.UI.TextButton(pawnRow, "Clear", 46, 20)
-    pawnClear:SetPoint("RIGHT", -6, 0)
-    local pawnImport = ns.UI.TextButton(pawnRow, "Import", 56, 20)
-    pawnImport:SetPoint("RIGHT", pawnClear, "LEFT", -4, 0)
-    local pawnBox = CreateFrame("EditBox", nil, pawnRow, "InputBoxTemplate")
-    pawnBox:SetAutoFocus(false)
-    pawnBox:SetHeight(20)
-    pawnBox:SetPoint("LEFT", pawnLabel, "RIGHT", 12, 0)
-    pawnBox:SetPoint("RIGHT", pawnImport, "LEFT", -6, 0)
-    Style.EditBox(pawnBox)
-    panel.pawnBox = pawnBox
-    local function ImportPawn()
-        local scale, err = ns:ImportPawnString(pawnBox:GetText() or "")
-        local specName = ns:SpecName(ns:GetEvalSpecID())
-        if scale then
-            pawnBox:SetText("")
-            pawnBox:ClearFocus()
-            ns:Print(string.format("Imported Pawn scale \"%s\" for %s.", scale.name or "?", specName or "this spec"))
-            if scale.spec and specName and scale.spec:lower() ~= tostring(specName):lower() then
-                ns:Print(string.format("Note: the scale says %s %s; it is applied to %s.", scale.class or "", scale.spec, specName))
-            end
-        else
-            ns:Print("Could not read that Pawn string:", err)
-        end
-        ns:RefreshOptionsPanel()
-    end
-    pawnImport:SetScript("OnClick", ImportPawn)
-    pawnBox:SetScript("OnEnterPressed", ImportPawn)
-    pawnBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    pawnClear:SetScript("OnClick", function() ns:SetStatWeights(nil); ns:RefreshOptionsPanel() end)
-    ns.UI.Tip(pawnBox, "ANCHOR_RIGHT", "Pawn string",
-        "Paste a Pawn scale string for this spec (from Pawn, Raidbots or a guide) and press Enter. Its weights order the stats, and tooltips then compare a drop's weighted value with your equipped item.")
-    ns.UI.Tip(pawnClear, "ANCHOR_RIGHT", "Clear weights", "Forget the imported scale for this spec.")
+        "Drop the manual order for this spec: order by the weight profile in use, or without one by how much of each stat you have equipped.")
 
     Header("Window")
     local sideRow = Row(26)
@@ -335,9 +377,15 @@ function ns:RefreshOptionsPanel()
         local s = self.STAT_BY_KEY[key]
         b.Text:SetText(s and s.short or tostring(key))
     end
-    local scale = self:GetStatWeights()
+    ns.UI.RefreshStatProfileButton(panel.profileDrop)
+    local pIndex, scale = self:GetActiveStatProfile()
+    panel.profileDelete:SetEnabled(pIndex ~= nil)
+    panel.nameRename:SetEnabled(pIndex ~= nil)
+    if not (panel.nameBox.HasFocus and panel.nameBox:HasFocus()) then
+        panel.nameBox:SetText(scale and tostring(scale.name) or "")
+    end
     panel.statSource:SetText(source == "manual" and "Manual order for this spec"
-        or source == "weights" and ("From Pawn scale: " .. tostring(scale and scale.name or "?"))
+        or source == "weights" and ("From weight profile: " .. tostring(scale and scale.name or "?"))
         or source == "gear" and "Learned from your equipped gear"
         or "|cff888888No secondary stats on your gear yet; click a stat to set an order|r")
     local lines = {}
