@@ -30,6 +30,7 @@ ns.DungeonForResult = DungeonForResult
 local function EnsureBadge(button)
     if button.SlotFillerBadge then return button.SlotFillerBadge end
     local badge = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ns.Style.Font(badge)
     local anchor = button.DataDisplay or button
     if button.DataDisplay then
         badge:SetPoint("RIGHT", anchor, "LEFT", -2, 0)
@@ -50,11 +51,16 @@ local function UpdateButton(button)
     local r = d and ns:ResultForDungeon(d)
     badge = EnsureBadge(button)
     if r and r.scanned then
+        local text
         if r.upgrades > 0 then
-            badge:SetText(string.format("%s%d^|r", HexFor(r), r.upgrades))
+            text = string.format("%s%d^|r", HexFor(r), r.upgrades)
         else
-            badge:SetText("|cff666666-|r")
+            text = "|cff666666-|r"
         end
+        if r.wanted and r.wanted > 0 then
+            text = text .. ns.Style.AccentHex() .. "*|r"
+        end
+        badge:SetText(text)
     else
         badge:SetText("")
     end
@@ -102,15 +108,10 @@ local function HookScrollBox()
     ns:RefreshLFGBadges()
 end
 
--- Tooltip line
-local function OnSearchEntryTooltip(tooltip, resultID)
-    if not ns.db or not ns.db.lfgTooltip then return end
-    local d = DungeonForResult(resultID)
-    if not d then return end
-    local r = ns:ResultForDungeon(d)
-    if not r or not r.scanned then return end
+-- Tooltip lines shared by group listings and keystones: upgrade count for the
+-- dungeon at `key`, plus the Voidcore chance when the context has one.
+local function AddDungeonLines(tooltip, r, key, ctx)
     tooltip:AddLine(" ")
-    local key = tostring(ns.db.targetKey or 10)
     if r.upgrades > 0 then
         local slots = {}
         for slotID in pairs(r.slots) do
@@ -118,15 +119,84 @@ local function OnSearchEntryTooltip(tooltip, resultID)
             table.insert(slots, ns.SLOT_SHORT[slotID] or (s and s.key) or tostring(slotID))
         end
         table.sort(slots)
-        tooltip:AddLine(string.format("Slot Filler: %s%d upgrade drop(s)|r at +%s (%s)", HexFor(r), r.upgrades, key, table.concat(slots, ", ")), 1, 1, 1, true)
+        tooltip:AddLine(string.format("Slot Filler: %s%d upgrade drop(s)|r at +%d (%s)", HexFor(r), r.upgrades, key, table.concat(slots, ", ")), 1, 1, 1, true)
     else
-        tooltip:AddLine("Slot Filler: no upgrade drops at +" .. key, 0.6, 0.6, 0.6)
+        tooltip:AddLine(string.format("Slot Filler: no upgrade drops at +%d", key), 0.6, 0.6, 0.6)
     end
-    if ns.dropCtx and ns.dropCtx.voidcore then
-        tooltip:AddLine(string.format("%sVoidcore roll: %d%% chance of an upgrade|r", ns.VC_HEX, r.vcChance * 100 + 0.5), 1, 1, 1, true)
+    if r.wanted and r.wanted > 0 then
+        local names = {}
+        for _, eval in ipairs(r.wantedItems or {}) do
+            names[#names + 1] = eval.item.link and eval.item.link:match("%[(.-)%]") or eval.item.name or "?"
+        end
+        tooltip:AddLine(string.format("%sWanted here:|r %s", ns.Style.AccentHex(), table.concat(names, ", ")), 1, 1, 1, true)
+    end
+end
+
+local function OnSearchEntryTooltip(tooltip, resultID)
+    if not ns.db or not ns.db.lfgTooltip then return end
+    local d = DungeonForResult(resultID)
+    if not d then return end
+    local r = ns:ResultForDungeon(d)
+    if not r or not r.scanned then return end
+    AddDungeonLines(tooltip, r, ns.db.targetKey or 10, ns.dropCtx)
+    tooltip:Show()
+end
+
+-------------------------------------------------------------------------------
+-- Mythic Keystone tooltips: the keystone in your bags and keystone links in
+-- chat. Evaluated at that key's own level, not the window's selected key.
+-------------------------------------------------------------------------------
+local KEYSTONE_ITEM = 180653
+
+function ns.KeystoneFromLink(link)
+    if type(link) ~= "string" then return nil end
+    local mapID, level = link:match("|Hkeystone:%d+:(%d+):(%d+)")
+    if mapID then return tonumber(mapID), tonumber(level) end
+    return nil
+end
+
+function ns:AddKeystoneTooltip(tooltip, mapID, level)
+    local d = self.dungeonByMapID and self.dungeonByMapID[mapID]
+    if not d then return end
+    local r = self:EvaluateDungeonAt(d, level)
+    if not r.scanned then
+        tooltip:AddLine(" ")
+        tooltip:AddLine("Slot Filler: loot table not scanned yet", 0.6, 0.6, 0.6)
+    else
+        AddDungeonLines(tooltip, r, level or (self.db.targetKey or 10), r.ctx)
     end
     tooltip:Show()
 end
+
+local function OnItemTooltip(tooltip, data)
+    if not ns.db or not ns.db.keystoneTooltip then return end
+    if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then return end
+    local link = data and data.hyperlink
+    if TooltipUtil and TooltipUtil.GetDisplayedItem then
+        local ok, _, displayed = pcall(TooltipUtil.GetDisplayedItem, tooltip)
+        if ok and type(displayed) == "string" then link = displayed end
+    end
+    if ns.issecret(link) then return end
+    local mapID, level = ns.KeystoneFromLink(link)
+    if not mapID then
+        -- the keystone item without a keystone link: it can only be ours
+        local id = data and data.id
+        if id and not ns.issecret(id) and id == KEYSTONE_ITEM
+            and C_MythicPlus and C_MythicPlus.GetOwnedKeystoneChallengeMapID then
+            mapID = C_MythicPlus.GetOwnedKeystoneChallengeMapID()
+            level = C_MythicPlus.GetOwnedKeystoneLevel()
+        end
+    end
+    if not mapID or ns.issecret(mapID) or ns.issecret(level) then return end
+    ns:AddKeystoneTooltip(tooltip, mapID, level)
+end
+
+ns:On("LOGIN", function()
+    if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall
+        and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Item then
+        TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnItemTooltip)
+    end
+end)
 
 ns:On("LOGIN", function()
     if LFGListUtil_SetSearchEntryTooltip then

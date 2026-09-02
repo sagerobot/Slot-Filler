@@ -7,12 +7,14 @@
 ## SavedVariablesPerCharacter: SlotFillerCharDB
 ## IconTexture: Interface\Icons\INV_Misc_Bag_17
 ## X-Category: Loot
-## OptionalDeps: RaiderIO
+## OptionalDeps: EllesmereUI, RaiderIO
 
 Core.lua
 Data.lua
+Style.lua
 Tracks.lua
 Gear.lua
+Stats.lua
 Links.lua
 Season.lua
 Loot.lua

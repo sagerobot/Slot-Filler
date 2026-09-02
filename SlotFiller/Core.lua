@@ -18,8 +18,14 @@ ns.DEFAULTS = {
         linkBonus = {},
         -- Count immediate item level upgrades that are not a track upgrade.
         countIlvlUpgrades = true,
-        -- Sorting: "upgrades" | "chance" | "slots" | "name"
+        -- Manual secondary stat order per spec: [specID] = { "HASTE", ... }; absent = weights or gear.
+        statPrio = {},
+        -- Imported Pawn scale per spec: [specID] = { name, class, spec, weights = { CRIT = n, ... } }.
+        statWeights = {},
+        -- Sorting: "upgrades" | "wanted" | "name"
         sortMode = "upgrades",
+        -- Gear tab sorting: "slot" | "upgrades" | "wanted"
+        gearSort = "slot",
         -- Where the window lives relative to PVEFrame: "left" | "right" | "free"
         anchorSide = "left",
         -- Show only while the Premade Groups tab is active (otherwise whenever PVEFrame is open).
@@ -30,6 +36,8 @@ ns.DEFAULTS = {
         lfgBadges = true,
         -- Extra line in the premade group tooltip.
         lfgTooltip = true,
+        -- Same lines on Mythic Keystone tooltips (bags, chat links), at that key's level.
+        keystoneTooltip = true,
         -- Hide dungeons with zero upgrades.
         hideEmptyDungeons = false,
         -- Hide non-upgrade items inside dungeon lists.
@@ -50,8 +58,12 @@ ns.DEFAULTS = {
     char = {
         -- Per-slot manual state: [slotID] = "auto" | "want" | "skip"
         slotState = {},
-        -- Per-item overrides: [itemID] = "exclude" | "want"
+        -- Legacy per-item overrides (moved into itemStateBySpec on first use).
         itemState = {},
+        -- Per-spec item overrides: [specID] = { [itemID] = "want" | "exclude" }. "want" is the wanted list.
+        itemStateBySpec = {},
+        -- Wanted items that turned up: [specID] = { [itemID] = time }.
+        obtained = {},
         -- Loot cache: [seasonID] = { [specID] = { time, version, dungeons = { [challengeMapID] = {...} } } }
         lootCache = {},
         -- Spec the window evaluates for (nil = follow loot spec).
@@ -185,7 +197,8 @@ end)
 SLASH_SLOTFILLER1 = "/sf"
 SLASH_SLOTFILLER2 = "/slotfiller"
 SlashCmdList.SLOTFILLER = function(msg)
-    msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    local raw = strtrim(msg or "")
+    msg = raw:lower()
     local cmd, rest = msg:match("^(%S*)%s*(.-)$")
     if cmd == "" or cmd == "toggle" then
         ns:ToggleWindow()
@@ -213,11 +226,24 @@ SlashCmdList.SLOTFILLER = function(msg)
         ns:PrintStatus()
     elseif cmd == "link" or cmd == "links" then
         ns:PrintLinkDiagnostics()
+    elseif cmd == "pawn" then
+        local text = raw:match("^%S+%s*(.-)$") or ""
+        if text == "" or text == "clear" then
+            ns:SetStatWeights(nil)
+            ns:Print("Stat weights cleared for", (ns:SpecName(ns:GetEvalSpecID())) or "this spec")
+        else
+            local scale, err = ns:ImportPawnString(text)
+            if scale then
+                ns:Print(string.format("Imported Pawn scale \"%s\" for %s.", scale.name or "?", (ns:SpecName(ns:GetEvalSpecID())) or "this spec"))
+            else
+                ns:Print("Could not read that Pawn string:", err)
+            end
+        end
     elseif cmd == "reset" then
         if rest == "overrides" then
             wipe(ns.cdb.slotState); wipe(ns.cdb.itemState)
+            ns:ClearItemStates()
             ns:Print("Slot and item overrides cleared.")
-            ns:Fire("SETTINGS_CHANGED")
         elseif rest == "cache" then
             wipe(ns.cdb.lootCache)
             ns:Print("Loot cache cleared. Rescanning.")
@@ -239,6 +265,7 @@ SlashCmdList.SLOTFILLER = function(msg)
         print("  /sf options    open settings")
         print("  /sf status     print what the addon currently knows")
         print("  /sf link       diagnostics for item tooltips at the selected key")
+        print("  /sf pawn <string>   import a Pawn scale for the current spec (/sf pawn clear)")
         print("  /sf reset overrides|cache|all")
         print("  /sf debug      toggle debug output")
     end

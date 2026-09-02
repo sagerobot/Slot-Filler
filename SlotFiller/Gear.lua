@@ -221,13 +221,127 @@ function ns:CycleSlotState(slotID)
     self:Fire("SETTINGS_CHANGED")
 end
 
+-------------------------------------------------------------------------------
+-- Item state per spec: "want" (the wanted list) or "exclude".
+-- Kept per spec because a wanted list is a BiS list, and BiS differs per spec.
+-------------------------------------------------------------------------------
+local function StatesFor(self)
+    if not self.cdb then return nil end
+    local spec = self:GetEvalSpecID()
+    if not spec then return nil end
+    local by = self.cdb.itemStateBySpec
+    if not by then by = {}; self.cdb.itemStateBySpec = by end
+    -- one-time move of the old flat table into the current spec
+    local flat = self.cdb.itemState
+    if flat and next(flat) then
+        by[spec] = by[spec] or {}
+        for id, state in pairs(flat) do
+            if by[spec][id] == nil then by[spec][id] = state end
+        end
+        wipe(flat)
+    end
+    by[spec] = by[spec] or {}
+    return by[spec]
+end
+
 function ns:GetItemState(itemID)
-    return self.cdb and self.cdb.itemState[itemID] or nil
+    local t = StatesFor(self)
+    return t and t[itemID] or nil
 end
 
 function ns:SetItemState(itemID, state)
-    self.cdb.itemState[itemID] = state
+    local t = StatesFor(self)
+    if not t then return end
+    t[itemID] = state
     self:Fire("SETTINGS_CHANGED")
+end
+
+-- Sorted list of wanted item IDs for the evaluated spec.
+function ns:WantedItemIDs()
+    local out = {}
+    local t = StatesFor(self)
+    if t then
+        for id, state in pairs(t) do if state == "want" then out[#out + 1] = id end end
+    end
+    table.sort(out)
+    return out
+end
+
+function ns:ClearItemStates()
+    local t = StatesFor(self)
+    if t then wipe(t) end
+    self:Fire("SETTINGS_CHANGED")
+end
+
+-------------------------------------------------------------------------------
+-- Obtained: a wanted item that turns up equipped or in the bags leaves the
+-- wanted list on its own, so the window never keeps pointing at it.
+-------------------------------------------------------------------------------
+function ns:OwnsItem(itemID)
+    for _, g in pairs(self.gear or {}) do
+        if g.itemID == itemID then return true end
+    end
+    if C_Item and C_Item.GetItemCount then
+        local ok, n = pcall(C_Item.GetItemCount, itemID, true)
+        if ok and type(n) == "number" and not self.issecret(n) and n > 0 then return true end
+    end
+    return false
+end
+
+-- Loot table entry for an item ID (any dungeon), or nil.
+function ns:LootItem(itemID)
+    local entry = self.loot
+    if not (entry and entry.dungeons) then return nil end
+    for _, d in pairs(entry.dungeons) do
+        for _, item in ipairs(d.items or {}) do
+            if item.itemID == itemID then return item end
+        end
+    end
+    return nil
+end
+
+function ns:CheckObtained()
+    local states = StatesFor(self)
+    if not states then return end
+    local spec = self:GetEvalSpecID()
+    local changed = false
+    for itemID, state in pairs(states) do
+        if state == "want" and self:OwnsItem(itemID) then
+            states[itemID] = nil
+            self.cdb.obtained = self.cdb.obtained or {}
+            self.cdb.obtained[spec] = self.cdb.obtained[spec] or {}
+            self.cdb.obtained[spec][itemID] = time()
+            local item = self:LootItem(itemID)
+            self:Print("Got it:", item and (item.link or item.name) or ("item " .. itemID), "- removed from your wanted list.")
+            changed = true
+        end
+    end
+    if changed then self:Fire("SETTINGS_CHANGED") end
+end
+
+-------------------------------------------------------------------------------
+-- Wanted list sharing: "SF1:<specID>:<itemID>,<itemID>,..."
+-------------------------------------------------------------------------------
+function ns:ExportWanted()
+    local ids = self:WantedItemIDs()
+    return string.format("SF1:%d:%s", self:GetEvalSpecID() or 0, table.concat(ids, ","))
+end
+
+-- Adds the items in the string to the current spec's wanted list. Returns the
+-- number added, or nil and a reason.
+function ns:ImportWanted(text)
+    if type(text) ~= "string" then return nil, "empty" end
+    local spec, list = text:match("SF1:(%d+):([%d,]*)")
+    if not spec then return nil, "not a Slot Filler list" end
+    local t = StatesFor(self)
+    if not t then return nil, "no spec" end
+    local n = 0
+    for id in list:gmatch("%d+") do
+        id = tonumber(id)
+        if id and t[id] ~= "want" then t[id] = "want"; n = n + 1 end
+    end
+    self:Fire("SETTINGS_CHANGED")
+    return n, tonumber(spec)
 end
 
 -------------------------------------------------------------------------------
@@ -236,6 +350,10 @@ end
 ns:On("LOGIN", function()
     ns:RegisterEvent("PLAYER_EQUIPMENT_CHANGED", function()
         ns:Schedule("gear", 0.5, function() ns:ScanGear() end)
+        ns:Schedule("obtained", 1, function() ns:CheckObtained() end)
+    end)
+    ns:RegisterEvent("BAG_UPDATE_DELAYED", function()
+        ns:Schedule("obtained", 1, function() ns:CheckObtained() end)
     end)
     -- item data can arrive late right after login
     ns:RegisterEvent("PLAYER_ENTERING_WORLD", function()

@@ -17,16 +17,26 @@ local function check(cond, msg)
 end
 
 -------------------------------------------------------------------------------
--- Generic widget stub: any unknown method is a no-op returning nil.
+-- Generic widget stub: unknown method-shaped keys (SetX, GetX, IsX, ...) are
+-- no-ops returning nil; any other key (regions such as .Text or .ScrollBar)
+-- is nil, like a real frame that never had it.
 -------------------------------------------------------------------------------
 local Widget = {}
+local METHOD_PREFIXES = { "Set", "Get", "Is", "Register", "Unregister", "Enable", "Disable", "Hook",
+    "Clear", "Show", "Hide", "Create", "Start", "Stop", "Add", "Remove", "Num", "Update", "Refresh",
+    "Apply", "Play", "Raise", "Lower", "Can", "Has" }
 Widget.__index = function(t, k)
     local v = rawget(Widget, k)
     if v ~= nil then return v end
-    if type(k) == "string" and k:sub(1, 1) == "_" then return nil end
-    local f = function() end
-    rawset(t, k, f)
-    return f
+    if type(k) ~= "string" then return nil end
+    for _, p in ipairs(METHOD_PREFIXES) do
+        if k:sub(1, #p) == p then
+            local f = function() end
+            rawset(t, k, f)
+            return f
+        end
+    end
+    return nil
 end
 local function NewWidget(kind, name)
     local w = setmetatable({ _kind = kind, _name = name, _shown = false, _scripts = {}, _children = {} }, Widget)
@@ -136,23 +146,25 @@ local ITEMS = {
     [1002] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket of Testing" },
     [1003] = { "INVTYPE_2HWEAPON", 2, 8, 1, "Big Sword" },
     [1004] = { "INVTYPE_WEAPON", 2, 7, 1, "Small Sword" },
-    [1005] = { "INVTYPE_FINGER", 4, 0, 1, "Ring of Testing" },
+    [1005] = { "INVTYPE_FINGER", 4, 0, 1, "Ring of Testing", { CRIT = 50, VERS = 50 } },
+    [1009] = { "INVTYPE_FINGER", 4, 0, 1, "Ring of Haste", { HASTE = 60, MASTERY = 40, PRIMARY = 100 } },
     [1006] = { "INVTYPE_SHIELD", 4, 6, 1, "Shield of Testing" },
     [1007] = { "INVTYPE_CLOAK", 4, 1, 1, "Cloak of Testing" },
     [1008] = { "INVTYPE_CHEST", 4, 4, 1, "Chest of Testing" },
     [2001] = { nil, 12, 0, 1, "Quest Thing" },
     -- equipped
-    [5001] = { "INVTYPE_HEAD", 4, 4, 1, "Old Helm" },
+    [5001] = { "INVTYPE_HEAD", 4, 4, 1, "Old Helm", { HASTE = 80, MASTERY = 40 } },
     [5013] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket A" },
     [5014] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket B" },
     [5016] = { "INVTYPE_2HWEAPON", 2, 8, 1, "Equipped 2H" },
     [5017] = { "INVTYPE_2HWEAPON", 2, 8, 1, "Equipped 2H OH" },
-    [5011] = { "INVTYPE_FINGER", 4, 0, 1, "Ring A" },
-    [5012] = { "INVTYPE_FINGER", 4, 0, 1, "Ring B" },
+    [5011] = { "INVTYPE_FINGER", 4, 0, 1, "Ring A", { HASTE = 60, CRIT = 30 } },
+    [5012] = { "INVTYPE_FINGER", 4, 0, 1, "Ring B", { MASTERY = 50, VERS = 20, PRIMARY = 90 } },
     [5015] = { "INVTYPE_CLOAK", 4, 1, 1, "Old Cloak" },
     [5005] = { "INVTYPE_CHEST", 4, 4, 1, "Old Chest" },
 }
 local function Link(id) return string.format("|cffa335ee|Hitem:%d::::::::80:72::::::|h[%s]|h|r", id, ITEMS[id][5]) end
+_G.BAGS = {} -- itemID -> count in bags (C_Item.GetItemCount)
 
 -- Fake upgrade-track bonus IDs, sequential per (track, step):
 -- Adventurer 20001-20006, Veteran 20007-20012, Champion 20013-20018, Hero 20019-20024, Myth 20025-20030
@@ -207,6 +219,20 @@ _G.C_Item = {
         return EQUIPPED_ILVL and EQUIPPED_ILVL[id] or 0
     end,
     GetItemInfo = function() return nil end,
+    GetItemCount = function(id) return BAGS[id] or 0 end,
+    GetItemStats = function(link)
+        local id = tonumber(tostring(link):match("item:(%d+)"))
+        local st = ITEMS[id] and ITEMS[id][6]
+        local out = {}
+        if st then
+            out.ITEM_MOD_CRIT_RATING_SHORT = st.CRIT
+            out.ITEM_MOD_HASTE_RATING_SHORT = st.HASTE
+            out.ITEM_MOD_MASTERY_RATING_SHORT = st.MASTERY
+            out.ITEM_MOD_VERSATILITY = st.VERS
+            out.ITEM_MOD_INTELLECT_SHORT = st.PRIMARY
+        end
+        return out
+    end,
     GetItemUpgradeInfo = function(link)
         local track, st, _, maxIlvl = BonusInfo(BonusOfLink(link))
         if track then return { currentLevel = st, maxLevel = 6, maxItemLevel = maxIlvl, trackString = track } end
@@ -359,7 +385,7 @@ LFGListFrame.SearchPanel.ScrollBox = NewWidget("Frame")
 -- Load the addon
 -------------------------------------------------------------------------------
 local ns = {}
-local files = { "Core.lua", "Data.lua", "Tracks.lua", "Gear.lua", "Links.lua", "Season.lua", "Loot.lua", "Evaluate.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
+local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Loot.lua", "Evaluate.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
 for _, f in ipairs(files) do
     local chunk, err = loadfile(ADDON_DIR .. f)
     assert(chunk, err)
@@ -453,9 +479,12 @@ check(byItem[1005].slotID == 12, "ring in second dungeon still targets Veteran r
 check(r3.vcChance == 1 and r3.chance == 0.5, "Kings' Rest: 50% drop chance, 100% Voidcore chance")
 
 check(ns.results[1].upgrades >= ns.results[2].upgrades, "results sorted by drop upgrades")
-ns.db.sortMode = "voidcore"
+ns:SetItemState(1005, "want")
+ns.db.sortMode = "wanted"
 ns:Evaluate()
-check(ns.results[1].vcChance >= ns.results[#ns.results].vcChance, "results sorted by Voidcore chance")
+check(ns.results[1].wanted == 1 and ns.results[#ns.results].wanted == 0, "results sorted by wanted items (" .. ns.results[1].dungeon.name .. ")")
+check(ns:ResultForDungeon(ns.dungeonByMapID[584]).wantedItems[1].item.itemID == 1005, "wanted item listed for its dungeon")
+ns:SetItemState(1005, nil)
 ns.db.sortMode = "upgrades"
 
 -- countIlvlUpgrades off
@@ -473,20 +502,41 @@ byItem = {}
 for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
 check(byItem[1001].class == ns.UPGRADE_NONE and byItem[1001].reason == "slot skipped", "skipped slot ignores drops")
 ns.cdb.slotState[1] = nil
-ns.cdb.itemState[1002] = "exclude"
+ns:SetItemState(1002, "exclude")
 ns:Evaluate()
 r = ns:ResultForDungeon(ns.dungeonByMapID[587])
 byItem = {}
 for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
 check(byItem[1002].class == ns.UPGRADE_NONE and byItem[1002].voidcore.class == ns.UPGRADE_NONE, "excluded item ignored for drop and Voidcore")
-ns.cdb.itemState[1002] = nil
-ns.cdb.itemState[1008] = "want"
+ns:SetItemState(1002, nil)
+ns.cdb.itemState[1008] = "want" -- legacy flat table: moved into the spec on first use
 ns:Evaluate()
 r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
 byItem = {}
 for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
 check(byItem[1008].class == ns.UPGRADE_WANT, "wanted item counts")
-ns.cdb.itemState[1008] = nil
+check(ns:GetItemState(1008) == "want" and next(ns.cdb.itemState) == nil and ns.cdb.itemStateBySpec[72][1008] == "want", "legacy item state migrated per spec")
+check(r3.wanted == 1 and ns:WantedItemIDs()[1] == 1008, "wanted item counted for its dungeon")
+local sum = ns:SlotSummary()
+check(sum[5].wanted[1] and sum[5].wanted[1].eval.item.itemID == 1008 and sum[5].wanted[1].dungeon.challengeMapID == 249, "slot summary names the wanted item and where it drops")
+check(sum[1].bestDrop and sum[1].bestDrop.eval.item.itemID == 1001, "slot summary names the best drop for the head slot")
+-- the wanted chest turns up in the bags: it leaves the list on its own
+BAGS[1008] = 1
+ns:CheckObtained()
+RunTimers()
+check(ns:GetItemState(1008) == nil and ns.cdb.obtained[72][1008], "wanted item removed once obtained")
+BAGS[1008] = nil
+-- share the list
+ns:SetItemState(1002, "want"); ns:SetItemState(1005, "want")
+local exported = ns:ExportWanted()
+check(exported == "SF1:72:1002,1005", "wanted list exported (" .. exported .. ")")
+ns:ClearItemStates()
+check(#ns:WantedItemIDs() == 0, "wanted list cleared")
+local added = ns:ImportWanted(exported)
+check(added == 2 and ns:GetItemState(1002) == "want" and ns:GetItemState(1005) == "want", "wanted list imported")
+check(not ns:ImportWanted("nonsense"), "bad list rejected")
+ns:ClearItemStates()
+RunTimers()
 
 -- key level change
 ns:SetTargetKey(4)
@@ -589,15 +639,88 @@ check(ns:DungeonForActivity(1749) == ns.dungeonByMapID[587], "activity id -> dun
 check(ns:DungeonForActivity(9999) == ns.dungeonByMapID[584], "activity name -> dungeon via name match")
 check(ns.DungeonForResult(1) == ns.dungeonByMapID[587], "search result -> dungeon")
 
+-- keystone tooltips
+local km, kl = ns.KeystoneFromLink("|cffa335ee|Hkeystone:180653:587:12:9:10:0:0|h[Keystone: Murder Row (12)]|h|r")
+check(km == 587 and kl == 12, "keystone link parsed")
+local kt = { lines = {}, AddLine = function(self, text) table.insert(self.lines, text) end, Show = function() end }
+ns:AddKeystoneTooltip(kt, 587, 12)
+check(#kt.lines >= 2 and kt.lines[2]:find("Slot Filler:", 1, true) and kt.lines[2]:find("+12", 1, true), "keystone tooltip evaluates at the key's level")
+local kt2 = { lines = {}, AddLine = function(self, text) table.insert(self.lines, text) end, Show = function() end }
+ns:AddKeystoneTooltip(kt2, 249, 5)
+check(#kt2.lines >= 2 and kt2.lines[2]:find("+5", 1, true), "keystone tooltip for a lower key")
+
+-- stat priority: learned from gear, orders same-slot drops, manual override
+local order, src = ns:GetStatPriority()
+check(src == "gear" and order[1] == "HASTE" and order[2] == "MASTERY" and order[3] == "CRIT" and order[4] == "VERS",
+    "stat priority learned from gear (" .. table.concat(order or {}, ">") .. ")")
+local fake = { challengeMapID = 9999, name = "Fake Keep" }
+ns.loot.dungeons[9999] = { items = {
+    { itemID = 1005, name = "Ring of Testing", link = Link(1005), equipLoc = "INVTYPE_FINGER", icon = 1 },
+    { itemID = 1009, name = "Ring of Haste", link = Link(1009), equipLoc = "INVTYPE_FINGER", icon = 1 },
+} }
+local fr = ns:EvaluateDungeonAt(fake, 10)
+check(fr.items[1].item.itemID == 1009 and fr.items[2].item.itemID == 1005, "same-slot drops ordered by stat fit")
+check(fr.items[1].fit and math.abs(fr.items[1].fit - 0.8667) < 0.001, "Haste/Mastery ring fits 0.87 (top two stats)")
+check(fr.items[2].fit and math.abs(fr.items[2].fit - 0.1667) < 0.001, "Crit/Vers ring fits 0.17 (bottom two stats)")
+check(fr.items[1].equippedStats and fr.items[1].equippedStats.MASTERY == 50, "equipped ring stats read for the tooltip")
+check(fr.items[1].value == nil, "no weighted value without a scale")
+ns:SetStatPriority({ "VERS", "CRIT", "MASTERY", "HASTE" })
+RunTimers()
+fr = ns:EvaluateDungeonAt(fake, 10)
+check(fr.items[1].item.itemID == 1005, "manual priority reverses the order")
+check(select(2, ns:GetStatPriority()) == "manual", "manual priority reported")
+ns:SetStatPriority(nil)
+RunTimers()
+check(select(2, ns:GetStatPriority()) == "gear", "back to learning from gear")
+
+-- Pawn scale import: weights order the stats and value the drops
+local PAWN = '( Pawn: v1: "Erunak - Restoration Raid": Class=Shaman, Spec=Restoration, Intellect=81.97, CritRating=46.19, HasteRating=39.07, Versatility=36.99, MasteryRating=30.47, Leech=1.69, Avoidance=0.02, Indestructible=0.01, MovementSpeed=0.01 )'
+local parsed, perr = ns:ParsePawnString(PAWN)
+check(parsed and parsed.name == "Erunak - Restoration Raid" and parsed.class == "Shaman" and parsed.spec == "Restoration", "Pawn string header parsed")
+check(parsed and math.abs(parsed.weights.CRIT - 46.19) < 0.001 and math.abs(parsed.weights.PRIMARY - 81.97) < 0.001 and math.abs(parsed.weights.LEECH - 1.69) < 0.001, "Pawn weights parsed")
+check(not ns:ParsePawnString("hello"), "garbage is rejected")
+local imported = ns:ImportPawnString(PAWN)
+RunTimers()
+order, src = ns:GetStatPriority()
+check(imported and src == "weights" and order[1] == "CRIT" and order[2] == "HASTE" and order[3] == "VERS" and order[4] == "MASTERY",
+    "weights order the stats (" .. table.concat(order or {}, ">") .. ")")
+fr = ns:EvaluateDungeonAt(fake, 10)
+check(fr.items[1].fit and math.abs(fr.items[1].fit - 0.328) < 0.01 or fr.items[2].fit and math.abs(fr.items[2].fit - 0.328) < 0.01, "fit uses the real weights")
+check(fr.items[1].value and fr.items[2].value and fr.items[1].value > fr.items[2].value, "same-slot drops ordered by weighted value")
+check(fr.items[1].item.itemID == 1009, "the ring with a primary stat is worth more")
+check(fr.items[1].valueGain and math.abs(fr.items[1].valueGain - (11760 - 9640.6)) < 0.5, "value gain vs the equipped ring (" .. tostring(fr.items[1].valueGain) .. ")")
+check(fr.items[1].voidcore and fr.items[1].voidcore.value, "Voidcore roll valued too")
+SlashCmdList.SLOTFILLER("pawn clear")
+RunTimers()
+check(select(2, ns:GetStatPriority()) == "gear" and ns:GetStatWeights() == nil, "/sf pawn clear forgets the scale")
+SlashCmdList.SLOTFILLER("pawn " .. PAWN)
+RunTimers()
+check(ns:GetStatWeights() and ns:GetStatWeights().name == "Erunak - Restoration Raid", "/sf pawn imports with original casing")
+ns:SetStatWeights(nil)
+RunTimers()
+ns.loot.dungeons[9999] = nil
+
 -- UI smoke test: show/hide with PVEFrame
 PVEFrame._shown = true
 ns.db.anchorSide = "left"
 ns:ShowWindow(false)
 RunTimers()
 check(ns:IsWindowShown(), "window shown")
+check(ns:CurrentPage() == "dungeons", "Dungeons tab first")
+ns.uiExpandedMapID = 587
 ns:RefreshWindow()
+ns:ShowPage("gear")
+check(ns:CurrentPage() == "gear", "Gear tab shown")
+ns.uiExpandedSlotID = 12
+ns:RefreshWindow()
+ns.db.gearSort = "upgrades"
+ns:RefreshWindow()
+ns.db.gearSort = "slot"
 ns:ToggleOptionsPanel()
+check(ns:CurrentPage() == "settings", "Settings tab shown")
 ns:RefreshOptionsPanel()
+ns:ToggleOptionsPanel()
+check(ns:CurrentPage() == "dungeons", "back to Dungeons")
 ns:HideWindow(true)
 check(not ns:IsWindowShown(), "window hidden")
 ns:PrintStatus()

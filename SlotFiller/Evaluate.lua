@@ -33,6 +33,8 @@ function ns:GetDropContext(keyLevel)
         ctx.key = maxKey
         ctx.isVoidcore = true
         ctx.voidcore = Level(vaultIlvl, vaultSource)
+        ctx.statPrio, ctx.statPrioSource = self:GetStatPriority()
+    ctx.statWeights = self:GetStatWeights()
         return ctx
     end
     keyLevel = keyLevel or (self.db and self.db.targetKey) or 10
@@ -41,6 +43,8 @@ function ns:GetDropContext(keyLevel)
     local ctx = Level(ilvl, source) or { source = source }
     ctx.key = keyLevel
     ctx.voidcore = Level(vaultIlvl, vaultSource)
+    ctx.statPrio, ctx.statPrioSource = self:GetStatPriority()
+    ctx.statWeights = self:GetStatWeights()
     return ctx
 end
 
@@ -109,6 +113,13 @@ function ns:EvaluateItem(item, ctx)
     eval.slotID = best
     local g = self.gear[best] or { empty = true, ilvl = 0, potential = 0 }
     eval.equipped = g
+    local fitScale = ctx.statPrioSource == "weights" and ctx.statWeights or nil
+    eval.stats = self:ItemStats(item.link)
+    eval.fit = self:StatFit(eval.stats, ctx.statPrio, fitScale)
+    if not g.empty then
+        eval.equippedStats = self:ItemStats(g.link)
+        eval.equippedFit = self:StatFit(eval.equippedStats, ctx.statPrio, fitScale)
+    end
     local slotState = self:GetSlotState(best)
     local itemState = self:GetItemState(item.itemID)
 
@@ -132,6 +143,25 @@ function ns:EvaluateItem(item, ctx)
     eval.class, eval.reason, eval.gain, eval.potentialGain = drop.class, drop.reason, drop.gain, drop.potentialGain
     if ctx.voidcore and ctx.voidcore.ilvl then
         eval.voidcore = Classify(g, ctx.voidcore.ilvl, ctx.voidcore.potential, itemState, slotState)
+    end
+    -- Weighted values (Pawn scale): the drop at its actual level vs the equipped item.
+    local scale = ctx.statWeights
+    if scale then
+        local equippedValue = (not g.empty) and self:ItemValue(g.link, scale) or (g.empty and 0) or nil
+        eval.equippedValue = equippedValue
+        local link, kind = self:LinkForContext(item, ctx)
+        if kind == "exact" then
+            eval.value = self:ItemValue(link, scale)
+            if eval.value and equippedValue then eval.valueGain = eval.value - equippedValue end
+        end
+        local vc = ctx.voidcore
+        if eval.voidcore and vc and vc.ilvl then
+            local vlink, vkind = self:LinkForContext(item, { ilvl = vc.ilvl, step = vc.step, track = vc.track, key = ctx.key, isVoidcore = true })
+            if vkind == "exact" then
+                eval.voidcore.value = self:ItemValue(vlink, scale)
+                if eval.voidcore.value and equippedValue then eval.voidcore.valueGain = eval.voidcore.value - equippedValue end
+            end
+        end
     end
     return eval
 end
@@ -160,68 +190,91 @@ local function ItemSort(a, b)
     if av ~= bv then return av > bv end
     local sa, sb = slotOrder[a.slotID or 0] or 99, slotOrder[b.slotID or 0] or 99
     if sa ~= sb then return sa < sb end
+    -- same slot: by weighted value when a scale is imported, else the drop
+    -- whose stats sit higher in the priority first
+    if a.value and b.value and a.value ~= b.value then return a.value > b.value end
+    local fa, fb = a.fit or 0.5, b.fit or 0.5
+    if fa ~= fb then return fa > fb end
     return (a.item.name or "") < (b.item.name or "")
 end
 
 -------------------------------------------------------------------------------
 -- Full evaluation
 -------------------------------------------------------------------------------
+-- One dungeon against one drop context.
+function ns:EvaluateDungeon(d, ctx)
+    local loot = self:GetDungeonLoot(d.challengeMapID)
+    local r = {
+        dungeon = d,
+        items = {},
+        upgrades = 0,        -- end-of-dungeon drop upgrades
+        trackUpgrades = 0,
+        vcUpgrades = 0,      -- Voidcore roll upgrades
+        vcTrackUpgrades = 0,
+        total = 0,
+        slots = {},
+        slotCount = 0,
+        chance = 0,
+        vcChance = 0,
+        wanted = 0,          -- items on the wanted list that drop here
+        wantedItems = {},
+        scanned = loot ~= nil,
+    }
+    if loot then
+        for _, item in ipairs(loot) do
+            r.total = r.total + 1
+            local eval = self:EvaluateItem(item, ctx)
+            table.insert(r.items, eval)
+            if self:GetItemState(item.itemID) == "want" then
+                r.wanted = r.wanted + 1
+                table.insert(r.wantedItems, eval)
+            end
+            if self:CountsAsUpgrade(eval) then
+                r.upgrades = r.upgrades + 1
+                if eval.class ~= ILVL then r.trackUpgrades = r.trackUpgrades + 1 end
+                if eval.slotID and not r.slots[eval.slotID] then
+                    r.slots[eval.slotID] = true
+                    r.slotCount = r.slotCount + 1
+                end
+            end
+            if self:CountsAsUpgrade(eval, "voidcore") then
+                r.vcUpgrades = r.vcUpgrades + 1
+                if eval.voidcore.class ~= ILVL then r.vcTrackUpgrades = r.vcTrackUpgrades + 1 end
+            end
+        end
+        table.sort(r.items, ItemSort)
+        if r.total > 0 then
+            r.chance = r.upgrades / r.total
+            r.vcChance = r.vcUpgrades / r.total
+        end
+    end
+    return r
+end
+
+-- One dungeon at a specific key level (keystone tooltips). The context used is
+-- returned as r.ctx.
+function ns:EvaluateDungeonAt(d, keyLevel)
+    local ctx = self:GetDropContext(keyLevel)
+    local r = self:EvaluateDungeon(d, ctx)
+    r.ctx = ctx
+    return r
+end
+
 function ns:Evaluate()
     local ctx = self:GetDropContext()
     local results = {}
     for _, d in ipairs(self.dungeons) do
-        local loot = self:GetDungeonLoot(d.challengeMapID)
-        local r = {
-            dungeon = d,
-            items = {},
-            upgrades = 0,        -- end-of-dungeon drop upgrades
-            trackUpgrades = 0,
-            vcUpgrades = 0,      -- Voidcore roll upgrades
-            vcTrackUpgrades = 0,
-            total = 0,
-            slots = {},
-            slotCount = 0,
-            chance = 0,
-            vcChance = 0,
-            scanned = loot ~= nil,
-        }
-        if loot then
-            for _, item in ipairs(loot) do
-                r.total = r.total + 1
-                local eval = self:EvaluateItem(item, ctx)
-                table.insert(r.items, eval)
-                if self:CountsAsUpgrade(eval) then
-                    r.upgrades = r.upgrades + 1
-                    if eval.class ~= ILVL then r.trackUpgrades = r.trackUpgrades + 1 end
-                    if eval.slotID and not r.slots[eval.slotID] then
-                        r.slots[eval.slotID] = true
-                        r.slotCount = r.slotCount + 1
-                    end
-                end
-                if self:CountsAsUpgrade(eval, "voidcore") then
-                    r.vcUpgrades = r.vcUpgrades + 1
-                    if eval.voidcore.class ~= ILVL then r.vcTrackUpgrades = r.vcTrackUpgrades + 1 end
-                end
-            end
-            table.sort(r.items, ItemSort)
-            if r.total > 0 then
-                r.chance = r.upgrades / r.total
-                r.vcChance = r.vcUpgrades / r.total
-            end
-        end
-        table.insert(results, r)
+        table.insert(results, self:EvaluateDungeon(d, ctx))
     end
 
     local mode = self.db.sortMode or "upgrades"
     table.sort(results, function(a, b)
         if mode == "name" then return a.dungeon.name < b.dungeon.name end
-        if mode == "voidcore" then
-            if a.vcChance ~= b.vcChance then return a.vcChance > b.vcChance end
-            if a.vcUpgrades ~= b.vcUpgrades then return a.vcUpgrades > b.vcUpgrades end
-        elseif mode == "slots" then
-            if a.slotCount ~= b.slotCount then return a.slotCount > b.slotCount end
+        if mode == "wanted" then
+            if a.wanted ~= b.wanted then return a.wanted > b.wanted end
         end
         if a.upgrades ~= b.upgrades then return a.upgrades > b.upgrades end
+        if a.wanted ~= b.wanted then return a.wanted > b.wanted end
         if a.chance ~= b.chance then return a.chance > b.chance end
         if a.vcChance ~= b.vcChance then return a.vcChance > b.vcChance end
         return a.dungeon.name < b.dungeon.name
@@ -239,17 +292,25 @@ end
 function ns:SlotSummary()
     local summary = {}
     for _, s in ipairs(self.SLOTS) do
-        summary[s.id] = { best = NONE, dungeons = {}, count = 0, vcCount = 0, vcBest = NONE }
+        summary[s.id] = { best = NONE, dungeons = {}, count = 0, vcCount = 0, vcBest = NONE, wanted = {} }
     end
     if not self.results then return summary end
     for _, r in ipairs(self.results) do
         for _, eval in ipairs(r.items) do
             if eval.slotID then
                 local e = summary[eval.slotID]
+                if self:GetItemState(eval.item.itemID) == "want" then
+                    table.insert(e.wanted, { eval = eval, dungeon = r.dungeon })
+                end
                 if self:CountsAsUpgrade(eval) then
                     e.count = e.count + 1
                     if eval.class > e.best then e.best = eval.class end
                     e.dungeons[r.dungeon.challengeMapID] = (e.dungeons[r.dungeon.challengeMapID] or 0) + 1
+                    -- best drop: largest fully-upgraded gain, then immediate gain
+                    local gain = (eval.potentialGain or 0) * 1000 + (eval.gain or 0)
+                    if eval.class ~= WANT and (not e.bestDrop or gain > e.bestDropScore) then
+                        e.bestDrop, e.bestDropScore = { eval = eval, dungeon = r.dungeon }, gain
+                    end
                 end
                 if self:CountsAsUpgrade(eval, "voidcore") then
                     e.vcCount = e.vcCount + 1
