@@ -260,6 +260,7 @@ function ns:FindTargetBonus(targetIlvl, targetStep, link, targetKey)
         store.targets[key] = found
         store.known[found] = true
         self:Debug("Track bonus for", key, "=", found)
+        self:ClearLinkCache() -- links that failed for want of it can resolve now
     end
     return found
 end
@@ -275,8 +276,16 @@ end
 ns.MinimalLink = MinimalLink
 
 -- The given link rewritten to the wanted item level / step / track, or nil.
-function ns:LinkAtLevel(link, targetIlvl, targetStep, targetKey)
-    if not link or not targetIlvl then return nil end
+-- Resolved links for the session, "link|ilvl|step|track" -> link | false.
+-- Resolving renders tooltips (several per link when it fails), and an
+-- evaluation asks for every drop twice; with the cache it asks once.
+local linkCache = {}
+
+function ns:ClearLinkCache()
+    wipe(linkCache)
+end
+
+local function ResolveLinkAtLevel(self, link, targetIlvl, targetStep, targetKey)
     local ilvl, name, cur = self:ProbeLink(link)
     if Matches(ilvl, cur, name, targetIlvl, targetStep, targetKey) then return link end
 
@@ -300,6 +309,21 @@ function ns:LinkAtLevel(link, targetIlvl, targetStep, targetKey)
     end
     return nil
 end
+
+function ns:LinkAtLevel(link, targetIlvl, targetStep, targetKey)
+    if not link or not targetIlvl then return nil end
+    local key = link .. "|" .. targetIlvl .. "|" .. (targetStep or 0) .. "|" .. (targetKey or "")
+    local hit = linkCache[key]
+    if hit ~= nil then return hit or nil end
+    local resolved = ResolveLinkAtLevel(self, link, targetIlvl, targetStep, targetKey)
+    -- a miss on an item whose data has not arrived (no item level yet) is
+    -- not remembered: it is asked again later
+    if resolved or self.ItemLevelOf(link) then linkCache[key] = resolved or false end
+    return resolved
+end
+
+-- Track names learned later can change what a rendered link is taken for.
+ns:On("TRACKS_CHANGED", function() ns:ClearLinkCache() end)
 
 -------------------------------------------------------------------------------
 -- Link for a loot item under the current drop context

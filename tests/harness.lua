@@ -572,12 +572,14 @@ check(ns.db.voidcoreMode, "stepping up from Voidcore stays at Voidcore")
 ns:StepTargetKey(-1); RunTimers()
 check(not ns.db.voidcoreMode and ns.db.targetKey == 10 and not ns.dropCtx.isVoidcore, "stepping down from Voidcore returns to +10")
 ns.db.linkBonus = {}
+ns:ClearLinkCache()
 local l2 = ns:LinkAtLevel(head.link, 311, 3, "Hero")
 check(l2 and BonusOfLink(l2) == BonusFor(4, 3), "bonus discovery from the base link alone finds Hero 3/6")
 local l3 = ns:LinkAtLevel(head.link, 318, 1, "Myth")
 check(l3 and BonusOfLink(l3) == BonusFor(5, 1), "bonus discovery distinguishes Myth 1/6 from Hero 5/6 at the same item level")
 -- links without any track bonus (journal at plain Mythic): anchors come from equipped gear
 ns.db.linkBonus = {}
+ns:ClearLinkCache()
 local chest
 for _, it in ipairs(ns:GetDungeonLoot(249)) do if it.itemID == 1008 then chest = it end end
 check(chest and HasBonus(chest.link, 3524) and BonusOfLink(chest.link) == nil and not chest.links, "Kings' Rest links carry only the Mythic tag 3524")
@@ -595,20 +597,53 @@ local pi, pn, pc = ns:ProbeLink(l8)
 check(pi == 318 and pn == "Myth" and pc == 1, "Voidcore link renders as 318 Myth 1/6")
 local l6, k6 = ns:LinkForContext(chest, ns.dropCtx)
 check(k6 == "exact" and BonusOfLink(l6) == BonusFor(4, 3), "tooltip link for a bonus-less item is exact at +10")
+-- resolved links are remembered: no tooltip renders the second time round
+local probes = 0
+local realHyperlink = C_TooltipInfo.GetHyperlink
+C_TooltipInfo.GetHyperlink = function(...) probes = probes + 1; return realHyperlink(...) end
+local l6b, k6b = ns:LinkForContext(chest, ns.dropCtx)
+check(l6b == l6 and k6b == "exact" and probes == 0, "resolved links are cached (" .. probes .. " tooltip renders)")
+ns:Evaluate()
+check(probes == 0, "a full evaluation renders no tooltips once links are cached (" .. probes .. ")")
+C_TooltipInfo.GetHyperlink = realHyperlink
 ns:PrintLinkDiagnostics()
 
 -- reward API not loaded yet: flat curve -> season fallback table
 API_FLAT = true
 ns:ClearRewardCache()
 local ilvl, src = ns:RewardIlvl(10)
-check(ilvl == 311 and src == "fallback", "flat reward API falls back to the season table (" .. tostring(ilvl) .. ", " .. tostring(src) .. ")")
+check(ilvl == 311 and src == "api", "a flat reward API keeps the last good answer (" .. tostring(ilvl) .. ", " .. tostring(src) .. ")")
+ns:ClearRewardCache(true)
+ilvl, src = ns:RewardIlvl(10)
+check(ilvl == 311 and src == "fallback", "with nothing remembered it falls back to the season table (" .. tostring(ilvl) .. ", " .. tostring(src) .. ")")
 local v, vsrc = ns:VaultIlvl(10)
 check(v == 318 and vsrc == "fallback", "vault level from fallback table")
 check(ns:RewardIlvl(2) == 295 and ns:RewardIlvl(15) == 311, "fallback covers +2 and beyond the table")
+local requestsBefore = REQUESTED_REWARDS or 0
+local dungeonUpdates = 0
+ns:On("DUNGEONS_UPDATED", function() dungeonUpdates = dungeonUpdates + 1 end)
+ns:Evaluate()
+RunTimers()
+check((REQUESTED_REWARDS or 0) == requestsBefore, "evaluating with a flat API does not request season data (no request/event loop)")
+ev(ns.eventFrame, "CHALLENGE_MODE_MAPS_UPDATE")
+RunTimers()
+check(dungeonUpdates == 0 and #ns.dungeons == 3, "an update event with the same pool rebuilds nothing")
 API_FLAT = false
 ns:ClearRewardCache()
 RunTimers()
 check(ns:RewardIlvl(10) == 311 and select(2, ns:RewardIlvl(10)) == "api", "API used again once the curve rises")
+
+-- combat: evaluations wait for the fight to end
+local evaluations = 0
+ns:On("RESULTS_UPDATED", function() evaluations = evaluations + 1 end)
+_G.InCombatLockdown = function() return true end
+ns:Fire("SETTINGS_CHANGED")
+RunTimers()
+check(evaluations == 0 and ns.evaluatePending == true, "no evaluation in combat; one is pending")
+_G.InCombatLockdown = function() return false end
+ev(ns.eventFrame, "PLAYER_REGEN_ENABLED")
+RunTimers()
+check(evaluations == 1 and ns.evaluatePending == nil, "the pending evaluation runs when combat ends")
 
 -- calibration: stale defaults (previous season, 13 lower); equipped items must rebuild the table
 ns.db.trackOverride = nil
@@ -665,7 +700,10 @@ check(fr.items[1].fit and math.abs(fr.items[1].fit - 0.8667) < 0.001, "Haste/Mas
 check(fr.items[2].fit and math.abs(fr.items[2].fit - 0.1667) < 0.001, "Crit/Vers ring fits 0.17 (bottom two stats)")
 check(fr.items[1].equippedStats and fr.items[1].equippedStats.MASTERY == 50, "equipped ring stats read for the tooltip")
 check(fr.items[1].value == nil, "no weighted value without a scale")
+local settingsFires = 0
+ns:On("SETTINGS_CHANGED", function() settingsFires = settingsFires + 1 end)
 ns:SetStatPriority({ "VERS", "CRIT", "MASTERY", "HASTE" })
+check(settingsFires == 1, "saving a manual order fires SETTINGS_CHANGED once")
 RunTimers()
 fr = ns:EvaluateDungeonAt(fake, 10)
 check(fr.items[1].item.itemID == 1005, "manual priority reverses the order")
@@ -686,7 +724,9 @@ check(parsed and parsed.name == "Erunak - Restoration Raid" and parsed.class == 
 check(parsed and math.abs(parsed.weights.CRIT - 46.19) < 0.001 and math.abs(parsed.weights.PRIMARY - 81.97) < 0.001 and math.abs(parsed.weights.LEECH - 1.69) < 0.001, "Pawn weights parsed")
 check(parsed and parsed.primary == "Intellect", "primary stat remembered by name")
 check(not ns:ParsePawnString("hello"), "garbage is rejected")
+settingsFires = 0
 local imported, pIndex = ns:ImportPawnString(PAWN)
+check(settingsFires == 1, "importing a profile fires SETTINGS_CHANGED once")
 RunTimers()
 check(imported and pIndex == 1 and ns:StatProfileName() == "Erunak - Restoration Raid", "import saves an active profile named after the scale")
 check(ns:GetStatMode() == "auto", "importing weights switches to Auto")

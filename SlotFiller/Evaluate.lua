@@ -331,9 +331,19 @@ end
 -------------------------------------------------------------------------------
 local function Reevaluate()
     if not ns.db or not ns.dungeonsBuilt then return end
+    -- A pass reads every drop's stats and links; nothing it shows matters
+    -- mid-fight. Once, when combat ends.
+    if InCombatLockdown() then ns.evaluatePending = true; return end
     if not ns.gearScanned then ns:ScanGear() end
     ns:Schedule("evaluate", 0.1, function() ns:Evaluate() end)
 end
+
+ns:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+    if ns.evaluatePending then
+        ns.evaluatePending = nil
+        Reevaluate()
+    end
+end)
 
 ns:On("GEAR_UPDATED", Reevaluate)
 ns:On("LOOT_UPDATED", Reevaluate)

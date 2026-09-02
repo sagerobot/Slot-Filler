@@ -75,7 +75,7 @@ end)
 -------------------------------------------------------------------------------
 -- Reward item level per key level
 -------------------------------------------------------------------------------
-local rewardCache = {}
+local rewardCache = {}       -- keyLevel -> end-of-run ilvl, read while the API was usable
 local apiRewardsUsable = nil -- nil = not checked yet
 
 local function ReadApiRewards(keyLevel)
@@ -95,44 +95,45 @@ local function ReadApiRewards(keyLevel)
 end
 
 -- The reward APIs answer with base (Mythic 0) numbers until the client has
--- loaded the season's reward table. A curve that does not rise between +2
--- and +10 means the data is not there yet; use the season fallback meanwhile.
+-- loaded the season's reward table, and with nothing useful in combat. A
+-- curve that does not rise between +2 and +10 is not data. Nothing is
+-- requested from here: a request answers with the update events, which
+-- re-evaluate, which would ask again, a loop that ran every half second.
+-- RetrySeasonData asks, a few times after login.
 local function ApiRewardsUsable()
     if apiRewardsUsable ~= nil then return apiRewardsUsable end
     local _, low = ReadApiRewards(2)
     local _, high = ReadApiRewards(10)
-    if low and high and high > low then
+    local usable = (low and high and high > low) and true or false
+    if usable then
+        -- fresh data: read every level from it again
+        wipe(rewardCache)
+        ns.weeklyRewardCache = nil
         apiRewardsUsable = true
-    else
+    elseif not InCombatLockdown() then
+        -- a combat answer is no verdict; check again afterwards
         apiRewardsUsable = false
-        -- ask again; the answer changes once the data arrives
-        ns:RequestSeasonData()
-        ns.rewardRetries = (ns.rewardRetries or 0) + 1
-        if ns.rewardRetries <= 10 then
-            C_Timer.After(5, function()
-                apiRewardsUsable = nil
-                wipe(rewardCache)
-                ns.weeklyRewardCache = nil
-                ns:Fire("SETTINGS_CHANGED")
-            end)
-        end
     end
-    return apiRewardsUsable
+    return usable
+end
+
+function ns:RewardApiUsable()
+    return ApiRewardsUsable()
 end
 
 function ns:RewardIlvl(keyLevel)
     keyLevel = tonumber(keyLevel) or 0
     if keyLevel < 2 then keyLevel = 2 end
-    if rewardCache[keyLevel] then return rewardCache[keyLevel], "api" end
-    if ApiRewardsUsable() then
+    if ApiRewardsUsable() and not rewardCache[keyLevel] then
         local weekly, eor = ReadApiRewards(keyLevel)
         if eor then
             rewardCache[keyLevel] = eor
             self.weeklyRewardCache = self.weeklyRewardCache or {}
             self.weeklyRewardCache[keyLevel] = weekly
-            return eor, "api"
         end
     end
+    -- the last good answer stands while the API is flat (combat, reloads)
+    if rewardCache[keyLevel] then return rewardCache[keyLevel], "api" end
     local data = self:GetSeasonData()
     local fb = data.rewardByKey and data.rewardByKey[keyLevel]
     if not fb and data.rewardByKey then
@@ -167,10 +168,14 @@ function ns:VaultIlvl(keyLevel)
     return nil, "unknown"
 end
 
-function ns:ClearRewardCache()
-    wipe(rewardCache)
-    self.weeklyRewardCache = nil
+-- Check the API again on the next read. What it said last stays until it
+-- has something better; hard = forget that too (the pool changed).
+function ns:ClearRewardCache(hard)
     apiRewardsUsable = nil
+    if hard then
+        wipe(rewardCache)
+        self.weeklyRewardCache = nil
+    end
 end
 
 -- Highest key level that still raises the end-of-run item level (the curve
@@ -193,15 +198,18 @@ end
 ns.dungeons = {}
 ns.dungeonByMapID = {}
 
+-- Returns built (a pool is known) and changed (it differs from the one
+-- held). An unchanged pool keeps its tables (other modules annotate them)
+-- and fires nothing: the update events arrive on every zone change.
 function ns:BuildDungeons()
-    if not (C_ChallengeMode and C_ChallengeMode.GetMapTable) then return false end
+    if not (C_ChallengeMode and C_ChallengeMode.GetMapTable) then return false, false end
     local maps = C_ChallengeMode.GetMapTable()
-    if not maps or #maps == 0 then return false end
-    wipe(self.dungeons); wipe(self.dungeonByMapID)
+    if not maps or #maps == 0 then return false, false end
+    local list = {}
     for _, mapID in ipairs(maps) do
         local name, id, timeLimit, texture, background, instanceMapID = C_ChallengeMode.GetMapUIInfo(mapID)
         if name then
-            local d = {
+            table.insert(list, {
                 challengeMapID = mapID,
                 name = name,
                 norm = self:NormalizeName(name),
@@ -210,15 +218,26 @@ function ns:BuildDungeons()
                 timeLimit = timeLimit,
                 instanceMapID = (type(instanceMapID) == "number" and instanceMapID > 0) and instanceMapID
                     or self.FALLBACK_INSTANCE_MAP[mapID],
-            }
-            table.insert(self.dungeons, d)
-            self.dungeonByMapID[mapID] = d
+            })
         end
     end
-    table.sort(self.dungeons, function(a, b) return a.name < b.name end)
-    self.dungeonsBuilt = #self.dungeons > 0
-    self:Fire("DUNGEONS_UPDATED")
-    return self.dungeonsBuilt
+    table.sort(list, function(a, b) return a.name < b.name end)
+    local changed = #list ~= #self.dungeons
+    for i, d in ipairs(list) do
+        if changed then break end
+        if self.dungeons[i].challengeMapID ~= d.challengeMapID then changed = true end
+    end
+    if changed then
+        wipe(self.dungeons); wipe(self.dungeonByMapID)
+        for i, d in ipairs(list) do
+            self.dungeons[i] = d
+            self.dungeonByMapID[d.challengeMapID] = d
+        end
+        self.dungeonsBuilt = #self.dungeons > 0
+        self:ClearRewardCache(true)
+        self:Fire("DUNGEONS_UPDATED")
+    end
+    return self.dungeonsBuilt, changed
 end
 
 function ns:RequestSeasonData()
@@ -227,6 +246,21 @@ function ns:RequestSeasonData()
         if C_MythicPlus.RequestCurrentAffixes then pcall(C_MythicPlus.RequestCurrentAffixes) end
         if C_MythicPlus.RequestRewards then pcall(C_MythicPlus.RequestRewards) end
     end
+end
+
+-- The reward API can stay flat for a while after login: ask again a few
+-- times, out of combat, until it rises. The reply comes as the update
+-- events below, which re-check it.
+function ns:RetrySeasonData(tries)
+    tries = tries or 4
+    if tries <= 0 then return end
+    C_Timer.After(10, function()
+        if InCombatLockdown() then return ns:RetrySeasonData(tries) end
+        apiRewardsUsable = nil
+        if ApiRewardsUsable() then return end
+        ns:RequestSeasonData()
+        ns:RetrySeasonData(tries - 1)
+    end)
 end
 
 -------------------------------------------------------------------------------
@@ -308,15 +342,21 @@ end)
 
 ns:On("LOGIN", function()
     ns:RequestSeasonData()
+    ns:RetrySeasonData()
     ns:BuildDungeons()
     for _, ev in ipairs({ "CHALLENGE_MODE_MAPS_UPDATE", "MYTHIC_PLUS_CURRENT_AFFIX_UPDATE", "WEEKLY_REWARDS_UPDATE", "CHALLENGE_MODE_START", "CHALLENGE_MODE_COMPLETED" }) do
         ns:RegisterEvent(ev, function()
+            local wasUsable = ns:RewardApiUsable()
             ns:ClearRewardCache()
             ns:ClearActivityCache()
             ns:Schedule("dungeons", 0.5, function()
-                if ns:BuildDungeons() then
+                local built, changed = ns:BuildDungeons()
+                if built and changed then
                     ns:ApplyTrackDefaults()
                     ns:Fire("SEASON_READY")
+                elseif built and not wasUsable and ns:RewardApiUsable() then
+                    -- the reward data arrived: the numbers change
+                    ns:Fire("SETTINGS_CHANGED")
                 end
             end)
         end)

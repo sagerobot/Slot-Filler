@@ -130,6 +130,12 @@ function ns:ParsePawnString(text)
     return scale
 end
 
+-- "auto" or manual (nil) for a spec; the caller fires SETTINGS_CHANGED once.
+local function SetMode(self, specID, mode)
+    self.cdb.statMode = self.cdb.statMode or {}
+    self.cdb.statMode[specID] = mode == "auto" and "auto" or nil
+end
+
 -------------------------------------------------------------------------------
 -- Weight profiles. Every imported scale is kept per spec under a name, so a
 -- healer can hold a raid set and a Mythic+ set and switch between them:
@@ -206,7 +212,7 @@ end
 -- Saves a parsed scale as a new profile for the evaluated spec, named `name`
 -- (default: the Pawn scale's own name), and switches to it. Returns index, scale.
 function ns:AddStatProfile(scale, name)
-    local list = ProfileList(self)
+    local list, specID = ProfileList(self)
     if not list or type(scale) ~= "table" or type(scale.weights) ~= "table" then return nil end
     scale.pawnName = scale.pawnName or scale.name
     name = CleanName(name)
@@ -216,7 +222,7 @@ function ns:AddStatProfile(scale, name)
     scale.imported = scale.imported or time()
     list[#list + 1] = scale
     -- Pasting weights means "use these": the order follows them from now on.
-    self:SetStatMode("auto")
+    SetMode(self, specID, "auto")
     self:SetActiveStatProfile(#list)
     return #list, scale
 end
@@ -342,8 +348,7 @@ end
 function ns:SetStatMode(mode)
     local specID = self:GetEvalSpecID()
     if not specID or not self.cdb then return end
-    self.cdb.statMode = self.cdb.statMode or {}
-    self.cdb.statMode[specID] = mode == "auto" and "auto" or nil
+    SetMode(self, specID, mode)
     self:Fire("SETTINGS_CHANGED")
 end
 
@@ -378,7 +383,7 @@ function ns:SetStatPriority(order)
     if order ~= nil and not ValidOrder(order) then return end
     self.cdb.statPrio = self.cdb.statPrio or {}
     self.cdb.statPrio[specID] = order
-    if order then self:SetStatMode("manual") end
+    if order then SetMode(self, specID, "manual") end
     self:Fire("SETTINGS_CHANGED")
 end
 
