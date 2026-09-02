@@ -493,8 +493,8 @@ local function BuildFrame()
     title:SetScript("OnDragStop", function()
         frame:StopMovingOrSizing()
         if ns.db.anchorSide == "free" then
-            local point, _, relPoint, x, y = frame:GetPoint(1)
-            ns.db.freePos = { point = point, relPoint = relPoint, x = x, y = y }
+            ns:RememberFreePosition()
+            ns:AnchorWindow()
         end
     end)
     frame.TitleBar = title
@@ -563,7 +563,12 @@ local function BuildFrame()
     end
 
     frame:SetScript("OnShow", function() ns:RefreshWindow() end)
-    frame:SetScript("OnHide", function() ns:RestoreGroupFinderOffset() end)
+    frame:SetScript("OnHide", function()
+        -- Following the Group Finder: keep the screen position current for
+        -- the next time the window opens on its own.
+        if ns.db.anchorSide == "free" and ns.db.freeFollow then ns:RememberFreePosition() end
+        ns:RestoreGroupFinderOffset()
+    end)
     return frame
 end
 
@@ -1438,6 +1443,22 @@ local function PushGroupFinder()
     end)
 end
 
+-- Free mode: remembers where the window sits, on the screen and, while the
+-- Group Finder is open, relative to it ("Move with Dungeons & Raids").
+-- Offsets are in the window's own scale, as SetPoint takes them.
+function ns:RememberFreePosition()
+    if not frame then return end
+    local left, top = frame:GetLeft(), frame:GetTop()
+    if not (left and top) then return end
+    local fs = frame:GetEffectiveScale()
+    local uiTop = (UIParent:GetTop() or 0) * UIParent:GetEffectiveScale() / fs
+    self.db.freePos = { point = "TOPLEFT", relPoint = "TOPLEFT", x = left, y = top - uiTop }
+    if PVEFrame and PVEFrame:IsShown() and PVEFrame:GetLeft() then
+        local ps = PVEFrame:GetEffectiveScale()
+        self.db.freeOffset = { x = left - PVEFrame:GetLeft() * ps / fs, y = top - PVEFrame:GetTop() * ps / fs }
+    end
+end
+
 function ns:AnchorWindow()
     if not frame then return end
     local side = self.db.anchorSide or "left"
@@ -1457,11 +1478,26 @@ function ns:AnchorWindow()
     else
         self:RestoreGroupFinderOffset()
         frame:SetHeight(FREE_HEIGHT)
+        -- Anchored to the Group Finder, the window moves whenever it does.
+        local follow = self.db.freeFollow and PVEFrame and PVEFrame:IsShown()
+        local off = follow and self.db.freeOffset
         local pos = self.db.freePos
-        if pos and pos.point then
+        if off then
+            frame:SetPoint("TOPLEFT", PVEFrame, "TOPLEFT", off.x, off.y)
+        elseif pos and pos.point then
             frame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
         else
             frame:SetPoint("CENTER", UIParent, "CENTER", -300, 0)
+        end
+        if follow and not off then
+            -- First time next to the Group Finder since the option went on:
+            -- the offset is wherever the window is now.
+            self:RememberFreePosition()
+            off = self.db.freeOffset
+            if off then
+                frame:ClearAllPoints()
+                frame:SetPoint("TOPLEFT", PVEFrame, "TOPLEFT", off.x, off.y)
+            end
         end
     end
 end

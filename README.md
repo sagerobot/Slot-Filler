@@ -39,10 +39,11 @@ bags, keystone links in chat) get the same lines at that key's own level.
   those lines, so it stays right even if the season defaults are stale.
 - **Weapons**: one-hand / two-hand / off-hand drops are compared against the
   hand they would actually replace, based on what you have equipped.
-- **Stat priority**: Crit / Haste / Mastery / Versatility are ranked by how
-  much of each your equipped gear carries. Drops for the same slot are ordered
-  by how well their secondaries match, the stats column is coloured by that
-  match, and item tooltips compare the drop's stats with what you wear.
+- **Stat priority (Auto mode)**: Crit / Haste / Mastery / Versatility are
+  ranked by the weight profile in use, or without one by how much of each your
+  equipped gear carries. Drops for the same slot are ordered by how well their
+  secondaries match, the stats column is coloured by that match, and item
+  tooltips compare the drop's stats with what you wear.
 
 ## What you control
 
@@ -62,23 +63,27 @@ bags, keystone links in chat) get the same lines at that key's own level.
 - **Items**: right-click a drop to exclude it (a bad trinket, or something you
   already received from a Voidcore, since those leave the roll pool).
 - **Sorting**: click a column header (Dungeon, Drops, Wanted).
-- **Stat priority**: the learned order can be overridden per spec in the
-  options (left-click a stat to move it up, right-click to move it down, or
-  go back to weights / gear).
+- **Stat priority**: per spec, Manual or Auto in Settings. Manual is the
+  default: the four stats sit in a row, best first, and start in the Auto
+  order; left-click a stat to move it left, right-click to move it right.
+  Auto follows the weight profile in use, or your gear without one. Pasting
+  a Pawn string switches to Auto; the manual order is kept for when you
+  switch back.
 - **Weight profiles**: paste a Pawn scale string (from Pawn, Raidbots or a
   guide) into Settings, or `/sf pawn <string>`. Each import is saved as a
   named profile for the spec, so a healer can keep a Raid and a Mythic+
   profile and switch between them with the Weights button in the window
-  (the toolbar also shows the resulting stat order). The profile in use
-  orders the stats, and every drop gets a weighted value at the selected
+  (the toolbar also shows the resulting stat order). In Auto mode the
+  profile in use orders the stats, and every drop gets a weighted value at the selected
   key's item level (primary stat included) that tooltips compare with your
   equipped item and with the Voidcore version. Same-slot drops sort by that
   value. Rename and delete profiles in Settings. Profiles, like everything
   else the addon remembers about you, belong to the logged-in character.
 - **Settings** tab (or `/sf options`): count immediate ilvl-only upgrades,
   hide empty dungeons, wanted list sharing, weight profiles and stat priority,
-  dock side, auto-show rules, LFG badges, keystone tooltips, scale, manual
-  track shift.
+  dock side (left, right, or free; a free window can be set to move with the
+  Dungeons & Raids window for people who move that with another addon),
+  auto-show rules, LFG badges, keystone tooltips, scale, manual track shift.
 
 ## Look and feel
 

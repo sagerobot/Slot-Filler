@@ -48,6 +48,10 @@ ns.DEFAULTS = {
         scale = 1.0,
         -- Free-position storage.
         freePos = nil,
+        -- Free mode: move along with the Dungeons & Raids window.
+        freeFollow = false,
+        -- Free mode: offset from the Dungeons & Raids window's top-left corner.
+        freeOffset = nil,
         -- Debug output.
         debug = false,
     },
@@ -64,8 +68,10 @@ ns.DEFAULTS = {
         lootCache = {},
         -- Spec the window evaluates for (nil = follow loot spec).
         evalSpecID = nil,
-        -- Manual secondary stat order per spec: [specID] = { "HASTE", ... }; absent = weights or gear.
+        -- Manual secondary stat order per spec: [specID] = { "HASTE", ... }.
         statPrio = {},
+        -- Stat order mode per spec: [specID] = "auto" (weights, else gear); absent = manual.
+        statMode = {},
         -- Stat weight profiles per spec: [specID] = { { name, pawnName, class, spec, weights = { CRIT = n, ... } }, ... }.
         statProfiles = {},
         -- Profile in use per spec: [specID] = index into statProfiles; absent = rank stats from gear.
@@ -237,7 +243,7 @@ SlashCmdList.SLOTFILLER = function(msg)
             ns:PrintStatProfiles()
         elseif sub == "clear" or sub == "none" then
             ns:SetStatWeights(nil)
-            ns:Print("No weight profile in use for " .. specName .. "; stats are ranked from your gear. Saved profiles are kept.")
+            ns:Print("No weight profile in use for " .. specName .. ". Saved profiles are kept.")
         elseif sub == "use" or sub == "delete" or sub == "rename" then
             local what, newName = arg, nil
             if sub == "rename" then what, newName = arg:match("^(%S+)%s+(.-)%s*$") end

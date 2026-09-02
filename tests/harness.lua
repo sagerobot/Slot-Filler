@@ -649,8 +649,9 @@ local kt2 = { lines = {}, AddLine = function(self, text) table.insert(self.lines
 ns:AddKeystoneTooltip(kt2, 249, 5)
 check(#kt2.lines >= 2 and kt2.lines[2]:find("+5", 1, true), "keystone tooltip for a lower key")
 
--- stat priority: learned from gear, orders same-slot drops, manual override
+-- stat priority: Manual mode by default, starting from the gear order until a click saves one
 local order, src = ns:GetStatPriority()
+check(ns:GetStatMode() == "manual" and ns:GetManualStatPriority() == nil, "Manual mode by default, nothing saved yet")
 check(src == "gear" and order[1] == "HASTE" and order[2] == "MASTERY" and order[3] == "CRIT" and order[4] == "VERS",
     "stat priority learned from gear (" .. table.concat(order or {}, ">") .. ")")
 local fake = { challengeMapID = 9999, name = "Fake Keep" }
@@ -669,9 +670,14 @@ RunTimers()
 fr = ns:EvaluateDungeonAt(fake, 10)
 check(fr.items[1].item.itemID == 1005, "manual priority reverses the order")
 check(select(2, ns:GetStatPriority()) == "manual", "manual priority reported")
+ns:SetStatMode("auto")
+RunTimers()
+check(select(2, ns:GetStatPriority()) == "gear" and ns:GetManualStatPriority() ~= nil, "Auto follows the gear and keeps the manual order")
+ns:SetStatMode("manual")
+check(select(2, ns:GetStatPriority()) == "manual" and ns:GetStatPriority()[1] == "VERS", "back to Manual restores it")
 ns:SetStatPriority(nil)
 RunTimers()
-check(select(2, ns:GetStatPriority()) == "gear", "back to learning from gear")
+check(select(2, ns:GetStatPriority()) == "gear" and ns:GetStatMode() == "manual", "forgetting the manual order starts from the gear again")
 
 -- Pawn scale import: weights order the stats and value the drops
 local PAWN = '( Pawn: v1: "Erunak - Restoration Raid": Class=Shaman, Spec=Restoration, Intellect=81.97, CritRating=46.19, HasteRating=39.07, Versatility=36.99, MasteryRating=30.47, Leech=1.69, Avoidance=0.02, Indestructible=0.01, MovementSpeed=0.01 )'
@@ -683,6 +689,7 @@ check(not ns:ParsePawnString("hello"), "garbage is rejected")
 local imported, pIndex = ns:ImportPawnString(PAWN)
 RunTimers()
 check(imported and pIndex == 1 and ns:StatProfileName() == "Erunak - Restoration Raid", "import saves an active profile named after the scale")
+check(ns:GetStatMode() == "auto", "importing weights switches to Auto")
 check(ns.cdb.statProfiles[ns:GetEvalSpecID()][1] == imported and ns.db.statProfiles == nil, "profiles live in the per-character saved variables")
 order, src = ns:GetStatPriority()
 check(imported and src == "weights" and order[1] == "CRIT" and order[2] == "HASTE" and order[3] == "VERS" and order[4] == "MASTERY",
@@ -765,10 +772,57 @@ ns.db.gearSort = "slot"
 ns:ToggleOptionsPanel()
 check(ns:CurrentPage() == "settings", "Settings tab shown")
 ns:RefreshOptionsPanel()
+local settings = SlotFillerFrame.Pages.settings
+check(settings.StatModeTabs.selectedTabID == "auto" and settings.statHint:GetText() == "From your equipped gear", "Settings shows Auto and where the order comes from")
+local before = { unpack((ns:GetStatPriority())) }
+local chip = settings.statButtons[1]
+chip:GetScript("OnClick")(chip, "RightButton")
+local after = ns:GetStatPriority()
+check(ns:GetStatMode() == "manual" and after[1] == before[2] and after[2] == before[1], "right-clicking a stat moves it right and starts a manual order")
+check(settings.StatModeTabs.selectedTabID == "manual" and settings.statHint:GetText():find("^Left%-click"), "Settings switches to Manual and shows the click hint")
+chip:GetScript("OnClick")(chip, "LeftButton")
+check(ns:GetStatPriority()[1] == after[1], "the leftmost stat cannot move further left")
+ns:SetStatPriority(nil)
+ns:SetStatMode("auto")
 ns:ToggleOptionsPanel()
 check(ns:CurrentPage() == "dungeons", "back to Dungeons")
 ns:HideWindow(true)
 check(not ns:IsWindowShown(), "window hidden")
+
+-- free mode: "Move with Dungeons & Raids" anchors the window to the Group Finder
+local sf = SlotFillerFrame
+local points = {}
+sf.SetPoint = function(self, ...) points[#points + 1] = { ... } end
+sf.GetLeft = function() return 100 end
+sf.GetTop = function() return 500 end
+PVEFrame.GetLeft = function() return 300 end
+PVEFrame.GetTop = function() return 600 end
+UIParent.GetTop = function() return 768 end
+PVEFrame._shown = true
+ns.db.anchorSide = "free"
+ns.db.freeFollow = true
+ns:RememberFreePosition()
+check(ns.db.freeOffset and ns.db.freeOffset.x == -200 and ns.db.freeOffset.y == -100, "offset from the Group Finder remembered")
+check(ns.db.freePos and ns.db.freePos.x == 100 and ns.db.freePos.y == 500 - 768, "screen position remembered too")
+ns:AnchorWindow()
+local last = points[#points]
+check(last and last[2] == PVEFrame and last[4] == -200 and last[5] == -100, "free window anchored to the Group Finder")
+ns.db.freeFollow = false
+ns:AnchorWindow()
+last = points[#points]
+check(last and last[2] == UIParent and last[4] == 100 and last[5] == 500 - 768, "without the option it sits on the screen")
+ns.db.freeFollow = true
+PVEFrame._shown = false
+ns:AnchorWindow()
+last = points[#points]
+check(last and last[2] == UIParent, "with the Group Finder closed it sits on the screen")
+ns.db.freeOffset = nil
+PVEFrame._shown = true
+ns:AnchorWindow()
+last = points[#points]
+check(last and last[2] == PVEFrame and ns.db.freeOffset and ns.db.freeOffset.x == -200, "first time next to the Group Finder takes the offset from where the window is")
+sf.SetPoint, sf.GetLeft, sf.GetTop, PVEFrame.GetLeft, PVEFrame.GetTop, UIParent.GetTop = nil, nil, nil, nil, nil, nil
+ns.db.anchorSide, ns.db.freeFollow, ns.db.freeOffset, ns.db.freePos = "left", false, nil, nil
 ns:PrintStatus()
 
 -- slash commands

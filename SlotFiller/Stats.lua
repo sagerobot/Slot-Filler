@@ -1,11 +1,14 @@
 -- Slot Filler: secondary stat priority and stat weights.
--- Three sources, best first:
---   manual  - an order the user set per spec in the options
---   weights - the active weight profile for the spec: a Pawn scale string
---             imported and saved under a name (real weights, so drops also
---             get a weighted value that includes the primary stat). A spec
---             can hold several profiles, e.g. Raid and Mythic+, and switch.
---   gear    - the stat you stacked most on equipped items ranks first
+-- Two modes per spec, chosen in Settings (Manual is the default):
+--   manual  - the order the user arranged by clicking the stats. Until they
+--             have, the chips show the auto order so there is something to
+--             start from; the first click saves it.
+--   auto    - weights: the active weight profile for the spec, a Pawn scale
+--             string imported and saved under a name (real weights, so drops
+--             also get a weighted value that includes the primary stat). A
+--             spec can hold several profiles, e.g. Raid and Mythic+.
+--             gear: without a profile, the stat you stacked most on equipped
+--             items ranks first.
 -- The priority orders drops for the same slot and colours the stats column by
 -- how well a drop matches; weights add a value comparison in tooltips.
 local _, ns = ...
@@ -212,6 +215,8 @@ function ns:AddStatProfile(scale, name)
     scale.name = name
     scale.imported = scale.imported or time()
     list[#list + 1] = scale
+    -- Pasting weights means "use these": the order follows them from now on.
+    self:SetStatMode("auto")
     self:SetActiveStatProfile(#list)
     return #list, scale
 end
@@ -274,8 +279,8 @@ function ns:PrintStatProfiles()
         self:Print("No weight profiles saved for " .. specName .. ". Paste a Pawn string after /sf pawn to add one.")
         return
     end
-    self:Print(string.format("Weight profiles for %s (%s):", specName,
-        active and ("using " .. tostring(list[active].name)) or "none in use, stats ranked from gear"))
+    self:Print(string.format("Weight profiles for %s (%s, %s stat order):", specName,
+        active and ("using " .. tostring(list[active].name)) or "none in use", self:GetStatMode()))
     for i, scale in ipairs(list) do
         print(string.format("  %s%d. %s|r  %s", i == active and "|cffffffff" or "|cffaaaaaa", i, tostring(scale.name), self:StatWeightsText(scale, true)))
     end
@@ -326,12 +331,38 @@ local function ValidOrder(t)
     return true
 end
 
--- Effective priority for the evaluated spec. Returns order, source
--- ("manual" | "weights" | "gear") or nil when there is nothing to go on.
-function ns:GetStatPriority()
+-- "manual" (default) or "auto" for the evaluated spec.
+function ns:GetStatMode()
+    local specID = self:GetEvalSpecID()
+    local mode = self.cdb and self.cdb.statMode and specID and self.cdb.statMode[specID]
+    return mode == "auto" and "auto" or "manual"
+end
+
+-- Switching modes keeps the saved manual order, so Auto -> Manual restores it.
+function ns:SetStatMode(mode)
+    local specID = self:GetEvalSpecID()
+    if not specID or not self.cdb then return end
+    self.cdb.statMode = self.cdb.statMode or {}
+    self.cdb.statMode[specID] = mode == "auto" and "auto" or nil
+    self:Fire("SETTINGS_CHANGED")
+end
+
+-- The saved manual order for the evaluated spec, or nil.
+function ns:GetManualStatPriority()
     local specID = self:GetEvalSpecID()
     local manual = self.cdb and self.cdb.statPrio and specID and self.cdb.statPrio[specID]
-    if ValidOrder(manual) then return manual, "manual" end
+    return ValidOrder(manual) and manual or nil
+end
+
+-- Effective priority for the evaluated spec. Returns order, source
+-- ("manual" | "weights" | "gear") or nil when there is nothing to go on. In
+-- manual mode before any click, the auto order stands in (and is reported as
+-- what it is) so the first click has something to start from.
+function ns:GetStatPriority()
+    if self:GetStatMode() == "manual" then
+        local manual = self:GetManualStatPriority()
+        if manual then return manual, "manual" end
+    end
     local scale = self:GetStatWeights()
     if scale then return StableOrder(self, scale.weights), "weights" end
     local order = self:StatPriorityFromGear()
@@ -339,13 +370,15 @@ function ns:GetStatPriority()
     return nil, nil
 end
 
--- order = list of the four stat keys, or nil to fall back to weights / gear.
+-- order = list of the four stat keys; saving one puts the spec in manual
+-- mode. nil forgets the manual order (the mode stays).
 function ns:SetStatPriority(order)
     local specID = self:GetEvalSpecID()
     if not specID or not self.cdb then return end
     if order ~= nil and not ValidOrder(order) then return end
     self.cdb.statPrio = self.cdb.statPrio or {}
     self.cdb.statPrio[specID] = order
+    if order then self:SetStatMode("manual") end
     self:Fire("SETTINGS_CHANGED")
 end
 
