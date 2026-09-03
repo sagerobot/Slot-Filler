@@ -145,6 +145,7 @@ function ns:ScanGear()
             self.gear[slot.id] = ScanSlot(slot.id)
         end
     end
+    self:ScanWatermarks()
     self.gearScanned = true
     self:Fire("GEAR_UPDATED")
 end
@@ -173,6 +174,106 @@ function ns:ScanBagSamples()
         end
     end
     return samples
+end
+
+-------------------------------------------------------------------------------
+-- Free upgrade levels (Midnight): an item can be upgraded for free up to the
+-- highest item level the character has already reached in that slot; rings,
+-- trinkets and one-handers go by the lower of the pair. The client keeps
+-- that number per "redundancy slot" (Enum.ItemRedundancySlot) and reports
+-- it through C_ItemUpgrade. It is read when the gear is scanned, so an
+-- evaluation never calls the API: ns.watermarks[redundancySlot] = ilvl.
+-------------------------------------------------------------------------------
+local RS = (Enum and Enum.ItemRedundancySlot) or {}
+local RS_FINGER, RS_TRINKET = RS.Finger or 9, RS.Trinket or 10
+local RS_TWOHAND, RS_MAINHAND, RS_ONEHAND, RS_ONEHAND2, RS_OFFHAND =
+    RS.Twohand or 12, RS.MainhandWeapon or 13, RS.OnehandWeapon or 14, RS.OnehandWeaponSecond or 15, RS.Offhand or 16
+local REDUNDANCY_BY_SLOT = {
+    [1] = RS.Head or 0, [2] = RS.Neck or 1, [3] = RS.Shoulder or 2, [5] = RS.Chest or 3, [6] = RS.Waist or 4,
+    [7] = RS.Legs or 5, [8] = RS.Feet or 6, [9] = RS.Wrist or 7, [10] = RS.Hand or 8, [11] = RS_FINGER, [12] = RS_FINGER,
+    [13] = RS_TRINKET, [14] = RS_TRINKET, [15] = RS.Cloak or 11,
+}
+local REDUNDANCY_BY_EQUIPLOC = {
+    INVTYPE_2HWEAPON = RS_TWOHAND, INVTYPE_RANGED = RS_TWOHAND, INVTYPE_THROWN = RS_TWOHAND,
+    INVTYPE_WEAPONMAINHAND = RS_MAINHAND, INVTYPE_RANGEDRIGHT = RS_MAINHAND, INVTYPE_WEAPON = RS_ONEHAND,
+    INVTYPE_WEAPONOFFHAND = RS_OFFHAND, INVTYPE_HOLDABLE = RS_OFFHAND, INVTYPE_SHIELD = RS_OFFHAND,
+}
+ns.REDUNDANCY_NAMES = {
+    [0] = "Head", [1] = "Neck", [2] = "Shoulder", [3] = "Chest", [4] = "Waist", [5] = "Legs", [6] = "Feet", [7] = "Wrist",
+    [8] = "Hands", [9] = "Rings", [10] = "Trinkets", [11] = "Back", [12] = "Two-hand", [13] = "Main hand", [14] = "One-hand",
+    [15] = "Second one-hand", [16] = "Off hand",
+}
+ns.watermarks = {}
+
+local function Number(v)
+    if type(v) == "number" and not ns.issecret(v) and v > 0 then return v end
+    return nil
+end
+
+-- Reads every slot's level from the client. Returns true when any changed.
+function ns:ScanWatermarks()
+    local api = C_ItemUpgrade and C_ItemUpgrade.GetHighWatermarkForSlot
+    local marks, changed, any = {}, false, false
+    if api then
+        for r = 0, 16 do
+            local ok, mark = pcall(api, r)
+            mark = ok and Number(mark) or nil
+            if mark then marks[r] = mark; any = true end
+        end
+    end
+    for r = 0, 16 do
+        if marks[r] ~= self.watermarks[r] then changed = true end
+    end
+    self.watermarks = marks
+    self.watermarkSource = any and "api" or "gear"
+    return changed
+end
+
+-- Which redundancy slot a drop belongs to: the client's answer, else by
+-- inventory type. Static per item, so remembered.
+local redundancyByItem = {}
+function ns:RedundancySlotFor(item)
+    local id = item.itemID
+    local r = id and redundancyByItem[id]
+    if r ~= nil then return r or nil end
+    r = nil
+    if item.link and C_ItemUpgrade and C_ItemUpgrade.GetHighWatermarkSlotForItem then
+        local ok, v = pcall(C_ItemUpgrade.GetHighWatermarkSlotForItem, item.link)
+        if ok and type(v) == "number" and not self.issecret(v) then r = v end
+    end
+    if not r then
+        r = REDUNDANCY_BY_EQUIPLOC[item.equipLoc]
+        if not r then
+            local slots = self.INVTYPE_SLOTS[item.equipLoc]
+            r = type(slots) == "table" and REDUNDANCY_BY_SLOT[slots[1]] or nil
+        end
+    end
+    if id then redundancyByItem[id] = r or false end
+    return r
+end
+
+-- The level a drop that could go in `candidates` can be upgraded to for
+-- free: the client's mark for the item's redundancy slot, never below what
+-- the weaker candidate slot already wears (which is all there is to go on
+-- when the client reports nothing). Dual wielders go by the lower of the
+-- two one-hander marks. 0 when nothing is known.
+function ns:FreeUpgradeLevel(item, candidates)
+    local floor
+    for _, slotID in ipairs(candidates or {}) do
+        local g = self.gear[slotID]
+        local l = (g and not g.empty and g.ilvl) or 0
+        if not floor or l < floor then floor = l end
+    end
+    local r = self:RedundancySlotFor(item)
+    local mark = r and self.watermarks[r] or 0
+    if r == RS_ONEHAND then
+        local oh = self.gear[17]
+        if oh and not oh.empty and oh.classID == self.ITEM_CLASS_WEAPON and oh.equipLoc ~= "INVTYPE_2HWEAPON" then
+            local second = self.watermarks[RS_ONEHAND2]
+            if second and second < mark then mark = second end
+        end
+    end
+    return math.max(mark, floor or 0)
 end
 
 -------------------------------------------------------------------------------
@@ -424,6 +525,12 @@ ns:On("LOGIN", function()
     end)
     ns:RegisterEvent("BAG_UPDATE_DELAYED", function()
         ns:Schedule("obtained", 1, function() ns:CheckObtained() end)
+    end)
+    -- upgrading at the NPC raises a slot's free upgrade level
+    ns:RegisterEvent("ITEM_UPGRADE_MASTER_UPDATE", function()
+        ns:Schedule("watermarks", 1, function()
+            if ns:ScanWatermarks() and ns.db and ns.db.matchLevel then ns:Fire("GEAR_UPDATED") end
+        end)
     end)
     -- item data can arrive late right after login
     ns:RegisterEvent("PLAYER_ENTERING_WORLD", function()

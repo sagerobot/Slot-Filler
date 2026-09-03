@@ -75,6 +75,17 @@ the same lines at that key's own level.
 - **Key level** (`+`/`-` in the window or `/sf key 10`): drops are evaluated at
   that key's end-of-dungeon item level, up to the last key that still raises
   it (+10). Item tooltips show the item as it drops at the selected key.
+- **Match level** (the box on the toolbar, in Settings, or `/sf match`): in
+  Midnight an item can be upgraded for free up to the item level you have
+  already reached in that slot (rings, trinkets and one-handers go by the
+  lower of the pair). With the box on, every drop and Voidcore roll is judged
+  as if upgraded that far, as many steps of its own track as fit under the
+  slot's level, so same-slot drops compare by stats: a drop at the same
+  level with better stats (a higher weighted value with a profile, a better
+  priority match without) is a *stat upgrade*. The slot levels come from the
+  game (`C_ItemUpgrade.GetHighWatermarkForSlot`); until it reports them,
+  the weaker candidate slot's own item level stands in. Tooltips name the
+  free upgrade and the slot level, and show the item at that level.
 - **Raid difficulty**: the strip on the Raid tab (LFR, Normal, Heroic,
   Mythic; the lair's World difficulty sits in the LFR slot). Bosses are
   judged at that difficulty, and so are raid drops on the Gear tab.
@@ -120,7 +131,8 @@ the same lines at that key's own level.
   equipped item (and, with Shift, the Voidcore roll). Same-slot drops sort by that
   value. Rename and delete profiles in Settings. Profiles, like everything
   else the addon remembers about you, belong to the logged-in character.
-- **Settings** tab (or `/sf options`): count immediate ilvl-only upgrades,
+- **Settings** tab (or `/sf options`): count immediate ilvl-only upgrades
+  (stat upgrades follow the same switch), Match level,
   hide empty dungeons and bosses, wanted list sharing, weight profiles and stat priority,
   dock side (left, right, or free; a free window can be set to move with the
   Dungeons & Raids window for people who move that with another addon),
@@ -163,6 +175,7 @@ Upgrade classes for an item:
 | --- | --- |
 | track upgrade | Fully upgraded, the drop ends higher than your current item can. |
 | ilvl upgrade | Higher item level right now, but not a higher ceiling. |
+| stat upgrade | Match level only: same level once upgraded free, no lower ceiling, better stats. |
 | wanted | You flagged the item or its slot. |
 | no upgrade | Neither. |
 
@@ -175,6 +188,7 @@ over a drop to see how it would do as a Voidcore roll.
 ```
 /sf                 toggle the window
 /sf key <n>         set the key level
+/sf match           toggle Match level (drops judged as upgraded free to your slot's level)
 /sf rescan          rescan loot tables from the Adventure Guide
 /sf options         open settings
 /sf pawn <string>   save a Pawn scale as a weight profile for the current spec and use it

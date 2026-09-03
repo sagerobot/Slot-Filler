@@ -16,6 +16,9 @@ ns.DEFAULTS = {
         linkBonus = {},
         -- Count immediate item level upgrades that are not a track upgrade.
         countIlvlUpgrades = true,
+        -- Judge drops as upgraded free to the slot's item level (the client's
+        -- watermark), so same-slot drops compare by stats.
+        matchLevel = false,
         -- Sorting: "upgrades" | "wanted" | "name"
         sortMode = "upgrades",
         -- Gear tab sorting: "slot" | "upgrades" | "wanted"
@@ -243,6 +246,9 @@ SlashCmdList.SLOTFILLER = function(msg)
         end
     elseif cmd == "options" or cmd == "config" or cmd == "settings" then
         ns:OpenOptions()
+    elseif cmd == "match" then
+        ns:SetMatchLevel(not ns.db.matchLevel)
+        ns:Print("Match level", ns.db.matchLevel and "on: drops are judged as upgraded free to your slot's level." or "off.")
     elseif cmd == "debug" then
         ns.db.debug = not ns.db.debug
         ns:Print("Debug output", ns.db.debug and "enabled" or "disabled")
@@ -310,6 +316,7 @@ SlashCmdList.SLOTFILLER = function(msg)
         ns:Print("Commands:")
         print("  /sf            toggle the window")
         print("  /sf key <n>    evaluate drops at key level n")
+        print("  /sf match      toggle Match level (drops judged as upgraded free to your slot's level)")
         print("  /sf rescan     rescan dungeon loot tables")
         print("  /sf options    open settings")
         print("  /sf status     print what the addon currently knows")

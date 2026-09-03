@@ -40,7 +40,7 @@ ns.uiExpandedEncounterID = nil
 ns.uiExpandedSlotID = nil
 ns.uiExpandedRatingMapID = nil
 
-local NONE, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
+local NONE, STAT, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_STAT, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
 local ARROW_ATLAS = "Azerite-PointingArrow"
 local STAR_ATLAS, STAR_FILE
 
@@ -428,9 +428,21 @@ local function BuildToolbar()
     prio:SetWordWrap(false)
     bar.Prio = prio
 
+    -- Match level: judge drops as upgraded free to the slot's level
+    local match = Check(bar, 18)
+    match:SetPoint("RIGHT", bar, "TOPRIGHT", 2, -61)
+    match.Label = Style.Text(bar, 10, 1, 1, 1, 0.85)
+    match.Label:SetPoint("RIGHT", match, "LEFT", -1, 0)
+    match.Label:SetText("Match level")
+    match:SetScript("OnClick", function(self) ns:SetMatchLevel(self:GetChecked() and true or false) end)
+    Tip(match, "ANCHOR_BOTTOM", "Match level",
+        "Judge every drop as upgraded free to the item level you already have in that slot (rings, trinkets and one-handers: the lower of the pair).",
+        "Same-level drops with better stats then count as upgrades, so same-slot drops compare by stats.")
+    bar.Match = match
+
     local info = Style.Text(bar, 10, 1, 1, 1, 0.6)
-    info:SetPoint("TOPLEFT", 2, -54)
-    info:SetPoint("TOPRIGHT", -2, -54)
+    info:SetPoint("LEFT", bar, "TOPLEFT", 2, -61)
+    info:SetPoint("RIGHT", match.Label, "LEFT", -8, 0)
     info:SetJustifyH("LEFT")
     info:SetWordWrap(false)
     bar.Info = info
@@ -1175,6 +1187,8 @@ local function FillItemRow(it, eval, whereText)
         it.Gain:SetText(string.format("%s%+d|r|cff888888/%+d|r", Hex(TRACK), eval.gain, eval.potentialGain or 0))
     elseif eval.class == ILVL and eval.gain then
         it.Gain:SetText(string.format("%s%+d|r", Hex(ILVL), eval.gain))
+    elseif eval.class == STAT then
+        it.Gain:SetText(Hex(STAT) .. "stats|r")
     elseif eval.class == WANT and eval.gain then
         it.Gain:SetText(string.format("%s%+d|r", eval.gain > 0 and Hex(ILVL) or "|cff777777", eval.gain))
     elseif eval.gain then
@@ -1315,7 +1329,7 @@ function ns:ShowItemTooltip(btn)
     local ctx = btn.ctx or self.dropCtx
     local shift = IsShiftKeyDown and IsShiftKeyDown()
     GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-    local link, kind = self:LinkForContext(item, ctx or {})
+    local link, kind = self:LinkForContext(item, eval.matched or ctx or {})
     if link then
         GameTooltip:SetHyperlink(link)
     else
@@ -1327,8 +1341,10 @@ function ns:ShowItemTooltip(btn)
     end
     if ctx and ctx.ilvl then
         if kind == "exact" then
-            GameTooltip:AddLine(ctx.raid and string.format("|cff888888Shown as it drops on %s|r", ctx.difficultyName or "this difficulty")
-                or string.format("|cff888888Shown as it drops from a +%d|r", ctx.key or 0))
+            local shown = ctx.raid and string.format("Shown as it drops on %s", ctx.difficultyName or "this difficulty")
+                or string.format("Shown as it drops from a +%d", ctx.key or 0)
+            if eval.matched then shown = shown .. string.format(", upgraded free to %d", eval.matched.ilvl) end
+            GameTooltip:AddLine("|cff888888" .. shown .. "|r")
         else
             GameTooltip:AddLine("|cff888888Base item shown; the drop's own level is listed below|r")
         end
@@ -1358,7 +1374,9 @@ function ns:ShowItemTooltip(btn)
         local label = ns.UPGRADE_LABEL[r.class]
         local extra = r.reason and (" - " .. r.reason) or ""
         local s = Hex(r.class) .. label .. "|r" .. extra
-        if r.gain and r.class ~= NONE then
+        if r.class == STAT then
+            s = s .. "  (same level, better stats)"
+        elseif r.gain and r.class ~= NONE then
             s = s .. string.format("  (%+d now, %+d fully upgraded)", r.gain, r.potentialGain or 0)
         end
         return s
@@ -1373,6 +1391,15 @@ function ns:ShowItemTooltip(btn)
             TrackText(ctx.track, ctx.step),
             (ctx.potential and ctx.potential > ctx.ilvl) and string.format(" (up to %d)", ctx.potential) or ""), 1, 0.82, 0, true)
     end
+    -- the free upgrade to the slot's level (Match level)
+    if self.db.matchLevel and eval.freeLevel and eval.freeLevel > 0 then
+        local m = eval.matched
+        if m then
+            GameTooltip:AddLine(string.format("Free upgrade: |cffffffff%d|r %s  |cff888888(slot level %d)|r", m.ilvl, TrackText(m.track, m.step), eval.freeLevel), 1, 0.82, 0, true)
+        else
+            GameTooltip:AddLine(string.format("|cff888888Free upgrade: none (slot level %d)|r", eval.freeLevel), 1, 1, 1, true)
+        end
+    end
     GameTooltip:AddLine("  " .. Verdict(eval), 1, 1, 1, true)
     -- the Voidcore roll, on request
     local vc = ctx and ctx.voidcore
@@ -1381,6 +1408,10 @@ function ns:ShowItemTooltip(btn)
             GameTooltip:AddLine(string.format("%sVoidcore roll|r: |cffffffff%d|r %s%s", ns.VC_HEX, vc.ilvl,
                 TrackText(vc.track, vc.step),
                 (vc.potential and vc.potential > vc.ilvl) and string.format(" (up to %d)", vc.potential) or ""), 1, 1, 1, true)
+            local m = eval.voidcoreMatched
+            if m then
+                GameTooltip:AddLine(string.format("  Free upgrade: |cffffffff%d|r %s", m.ilvl, TrackText(m.track, m.step)), 1, 1, 1, true)
+            end
             GameTooltip:AddLine("  " .. Verdict(eval.voidcore), 1, 1, 1, true)
             if eval.voidcore.value then ValueLine("  " .. ns.VC_HEX .. "Roll value|r", eval.voidcore) end
         else
@@ -1513,6 +1544,7 @@ local function RefreshToolbar()
     for _, w in ipairs({ bar.KeyBox, bar.KeyPlus, bar.KeyMinus, bar.KeyLabel }) do w:SetShown(not raidTab) end
     bar.KeyText:SetText(self:TargetLabel())
     bar.KeyPlus:SetEnabled((self.db.targetKey or 10) < (self:MaxUsefulKey() or 10))
+    bar.Match:SetChecked(self.db.matchLevel and true or false)
     RefreshStatProfileButton(bar.WeightsButton)
     local order, source = self:GetStatPriority()
     bar.Prio:SetText(order and (self:StatPriorityText(order) .. (source == "manual" and " |cff888888(manual order)|r" or ""))
@@ -2359,7 +2391,11 @@ function ns:ShowWindow(manual)
     frame:SetScript("OnUpdate", OnUpdateWatch)
     if not frame.page then self:ShowPage("dungeons") end
     frame:Show()
-    if not self.gearScanned then self:ScanGear() end
+    if not self.gearScanned then
+        self:ScanGear()
+    elseif self.db.matchLevel and self:ScanWatermarks() then
+        self:Fire("GEAR_UPDATED")
+    end
     self:EnsureLoot(false)
     if not self.results then self:Evaluate() end
     self:RefreshWindow()
@@ -2512,4 +2548,10 @@ function ns:PrintStatus()
             print(string.format("    %-9s %s", s.key, EquippedDesc(g)))
         end
     end
+    local marks = {}
+    for r = 0, 16 do
+        if self.watermarks[r] then marks[#marks + 1] = string.format("%s %d", self.REDUNDANCY_NAMES[r] or tostring(r), self.watermarks[r]) end
+    end
+    print(string.format("  Free upgrade levels (Match level %s, %s): %s", self.db.matchLevel and "on" or "off", self.watermarkSource or "not read",
+        #marks > 0 and table.concat(marks, ", ") or "none reported by the client; equipped item levels stand in"))
 end

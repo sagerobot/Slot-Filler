@@ -10,7 +10,7 @@
 -- targets, a second star next to the wanted list.
 local _, ns = ...
 
-local NONE, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
+local NONE, STAT, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_STAT, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
 
 -------------------------------------------------------------------------------
 -- Drop context for the chosen key level
@@ -114,6 +114,44 @@ local function Classify(g, dropIlvl, dropPotential, itemState, slotState)
 end
 
 -------------------------------------------------------------------------------
+-- Match level: a drop (or a roll) as it would be after the free upgrade to
+-- the slot's level `mark`: the highest step of its own track at or under
+-- the mark, never below the level itself. Returns `level` itself when
+-- nothing changes.
+-------------------------------------------------------------------------------
+local function Matched(level, mark)
+    if not level or not level.ilvl or not mark or mark <= level.ilvl then return level end
+    local ilvl, step = level.ilvl, level.step
+    if level.track then
+        for i, v in ipairs(level.track.ilvls) do
+            if v <= mark and v > ilvl then ilvl, step = v, i end
+        end
+    else
+        ilvl = math.min(mark, level.potential or level.ilvl)
+    end
+    if ilvl == level.ilvl then return level end
+    return { ilvl = ilvl, step = step, track = level.track, potential = level.potential, source = level.source,
+        key = level.key, from = level.ilvl, mark = mark }
+end
+
+-- Same level, no lower ceiling, better stats: a weighted value above the
+-- equipped item's when a scale is in use, else a better fit.
+local function StatUpgrade(eval, r)
+    if r.class ~= NONE or r.reason then return false end
+    if (r.gain or 0) ~= 0 or (r.potentialGain or 0) < 0 then return false end
+    if r.valueGain then return r.valueGain > 0 end
+    if eval.fit and eval.equippedFit then return eval.fit > eval.equippedFit + 0.01 end
+    return false
+end
+
+function ns:SetMatchLevel(on)
+    if not self.db then return end
+    self.db.matchLevel = on and true or false
+    if on then self:ScanWatermarks() end
+    self:Fire("SETTINGS_CHANGED")
+end
+
+-------------------------------------------------------------------------------
 -- Single item evaluation
 -------------------------------------------------------------------------------
 function ns:EvaluateItem(item, ctx)
@@ -179,29 +217,45 @@ function ns:EvaluateItem(item, ctx)
         end
     end
 
-    local drop = Classify(g, ctx.ilvl, ctx.potential, itemState, slotState)
-    eval.class, eval.reason, eval.gain, eval.potentialGain = drop.class, drop.reason, drop.gain, drop.potentialGain
-    if ctx.voidcore and ctx.voidcore.ilvl then
-        eval.voidcore = Classify(g, ctx.voidcore.ilvl, ctx.voidcore.potential, itemState, slotState)
+    -- Match level: the drop and the roll as they would be after the free
+    -- upgrade to the slot's level.
+    local dropLevel, vcLevel = ctx, ctx.voidcore
+    if self.db.matchLevel then
+        local mark = self:FreeUpgradeLevel(item, candidates)
+        eval.freeLevel = mark
+        dropLevel = Matched(ctx, mark)
+        vcLevel = Matched(ctx.voidcore, mark)
+        if dropLevel ~= ctx then eval.matched = dropLevel end
+        if vcLevel ~= ctx.voidcore then eval.voidcoreMatched = vcLevel end
     end
-    -- Weighted values (Pawn scale): the drop at its actual level vs the equipped item.
+
+    local drop = Classify(g, dropLevel.ilvl, dropLevel.potential, itemState, slotState)
+    eval.class, eval.reason, eval.gain, eval.potentialGain = drop.class, drop.reason, drop.gain, drop.potentialGain
+    if vcLevel and vcLevel.ilvl then
+        eval.voidcore = Classify(g, vcLevel.ilvl, vcLevel.potential, itemState, slotState)
+    end
+    -- Weighted values (Pawn scale): the drop at its (matched) level vs the equipped item.
     local scale = ctx.statWeights
     if scale then
         local equippedValue = (not g.empty) and self:ItemValue(g.link, scale) or (g.empty and 0) or nil
         eval.equippedValue = equippedValue
-        local link, kind = self:LinkForContext(item, ctx)
+        local link, kind = self:LinkForContext(item, eval.matched or ctx)
         if kind == "exact" then
             eval.value = self:ItemValue(link, scale)
             if eval.value and equippedValue then eval.valueGain = eval.value - equippedValue end
         end
-        local vc = ctx.voidcore
-        if eval.voidcore and vc and vc.ilvl then
-            local vlink, vkind = self:LinkForContext(item, { ilvl = vc.ilvl, step = vc.step, track = vc.track, key = ctx.key, isVoidcore = true })
+        if eval.voidcore and vcLevel and vcLevel.ilvl then
+            local vlink, vkind = self:LinkForContext(item, { ilvl = vcLevel.ilvl, step = vcLevel.step, track = vcLevel.track, key = ctx.key, isVoidcore = true })
             if vkind == "exact" then
                 eval.voidcore.value = self:ItemValue(vlink, scale)
                 if eval.voidcore.value and equippedValue then eval.voidcore.valueGain = eval.voidcore.value - equippedValue end
             end
         end
+    end
+    -- Match level: at the same level, better stats make it an upgrade.
+    if self.db.matchLevel then
+        if StatUpgrade(eval, eval) then eval.class = STAT end
+        if eval.voidcore and StatUpgrade(eval, eval.voidcore) then eval.voidcore.class = STAT end
     end
     return eval
 end
@@ -209,7 +263,7 @@ end
 -- Whether the direct drop counts in the Drops column.
 function ns:CountsAsUpgrade(eval)
     if eval.class == TRACK or eval.class == WANT then return true end
-    if eval.class == ILVL and self.db.countIlvlUpgrades then return true end
+    if (eval.class == ILVL or eval.class == STAT) and self.db.countIlvlUpgrades then return true end
     return false
 end
 
@@ -268,7 +322,7 @@ local function EvaluateLoot(self, loot, ctx)
             end
             if self:CountsAsUpgrade(eval) then
                 r.upgrades = r.upgrades + 1
-                if eval.class ~= ILVL then r.trackUpgrades = r.trackUpgrades + 1 end
+                if eval.class ~= ILVL and eval.class ~= STAT then r.trackUpgrades = r.trackUpgrades + 1 end
                 if eval.slotID and not r.slots[eval.slotID] then
                     r.slots[eval.slotID] = true
                     r.slotCount = r.slotCount + 1

@@ -153,7 +153,7 @@ local ITEMS = {
     [1009] = { "INVTYPE_FINGER", 4, 0, 1, "Ring of Haste", { HASTE = 60, MASTERY = 40, PRIMARY = 100 } },
     [1006] = { "INVTYPE_SHIELD", 4, 6, 1, "Shield of Testing" },
     [1007] = { "INVTYPE_CLOAK", 4, 1, 1, "Cloak of Testing" },
-    [1008] = { "INVTYPE_CHEST", 4, 4, 1, "Chest of Testing" },
+    [1008] = { "INVTYPE_CHEST", 4, 4, 1, "Chest of Testing", { HASTE = 70, MASTERY = 50 } },
     [2001] = { nil, 12, 0, 1, "Quest Thing" },
     -- equipped
     [5001] = { "INVTYPE_HEAD", 4, 4, 1, "Old Helm", { HASTE = 80, MASTERY = 40 } },
@@ -164,7 +164,7 @@ local ITEMS = {
     [5011] = { "INVTYPE_FINGER", 4, 0, 1, "Ring A", { HASTE = 60, CRIT = 30 } },
     [5012] = { "INVTYPE_FINGER", 4, 0, 1, "Ring B", { MASTERY = 50, VERS = 20, PRIMARY = 90 } },
     [5015] = { "INVTYPE_CLOAK", 4, 1, 1, "Old Cloak" },
-    [5005] = { "INVTYPE_CHEST", 4, 4, 1, "Old Chest" },
+    [5005] = { "INVTYPE_CHEST", 4, 4, 1, "Old Chest", { HASTE = 20, MASTERY = 20 } },
 }
 local function Link(id) return string.format("|cffa335ee|Hitem:%d::::::::80:72::::::|h[%s]|h|r", id, ITEMS[id][5]) end
 _G.BAGS = {} -- itemID -> count in bags (C_Item.GetItemCount)
@@ -280,6 +280,21 @@ _G.C_TooltipInfo = {
     end,
 }
 _G.C_Container = { GetContainerNumSlots = function() return 0 end, GetContainerItemLink = function() return nil end }
+
+-- Free upgrade levels (Midnight): WATERMARKS[redundancySlot] = ilvl; nil = the client reports nothing
+_G.WATERMARKS = nil
+local REDUNDANCY_OF = { INVTYPE_HEAD = 0, INVTYPE_NECK = 1, INVTYPE_SHOULDER = 2, INVTYPE_CHEST = 3, INVTYPE_WAIST = 4, INVTYPE_LEGS = 5,
+    INVTYPE_FEET = 6, INVTYPE_WRIST = 7, INVTYPE_HAND = 8, INVTYPE_FINGER = 9, INVTYPE_TRINKET = 10, INVTYPE_CLOAK = 11,
+    INVTYPE_2HWEAPON = 12, INVTYPE_WEAPONMAINHAND = 13, INVTYPE_WEAPON = 14, INVTYPE_SHIELD = 16 }
+_G.C_ItemUpgrade = {
+    GetHighWatermarkForSlot = function(r)
+        if WATERMARKS and WATERMARKS[r] then return WATERMARKS[r], WATERMARKS[r] end
+    end,
+    GetHighWatermarkSlotForItem = function(link)
+        local id = tonumber(tostring(link):match("item:(%d+)"))
+        return ITEMS[id] and REDUNDANCY_OF[ITEMS[id][1]] or nil
+    end,
+}
 
 -- season / challenge mode
 local MAPS = {
@@ -648,6 +663,64 @@ ns:Evaluate()
 r = ns:ResultForDungeon(ns.dungeonByMapID[587])
 check(r.upgrades == 2, "ilvl-only upgrades excluded when disabled (" .. r.upgrades .. ")")
 ns.db.countIlvlUpgrades = true
+
+-- Match level: drops judged as upgraded free to the slot's level. Until the
+-- client reports its watermarks, the weaker candidate slot's own level stands in.
+ns:SetMatchLevel(true)
+RunTimers()
+check(ns.db.matchLevel and ns.watermarkSource == "gear", "Match level on; nothing from the client yet, equipped levels stand in")
+ns:SetTargetKey(8); RunTimers()
+check(ns.dropCtx.ilvl == 308 and ns.dropCtx.track.key == "Hero" and ns.dropCtx.step == 2, "+8 drop = Hero 2/6 (308)")
+r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+byItem = {}
+for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
+local m = byItem[1008].matched
+check(m and m.ilvl == 311 and m.step == 3 and m.track.key == "Hero" and byItem[1008].freeLevel == 311, "chest drop at +8 is judged at the chest's own 311 (Hero 3/6)")
+check(byItem[1008].class == ns.UPGRADE_STAT and byItem[1008].gain == 0 and byItem[1008].fit > byItem[1008].equippedFit, "same level, better stats: a stat upgrade")
+check(ns:CountsAsUpgrade(byItem[1008]) and r3.upgrades == 2 and r3.trackUpgrades == 1, "stat upgrades count in Drops, not as track upgrades")
+check(ns.dropCtx.voidcore.ilvl == 315 and byItem[1008].voidcore.class == ns.UPGRADE_ILVL and byItem[1008].voidcore.gain == 4 and not byItem[1008].voidcoreMatched, "the +8 roll (315 Hero 4/6) is above the slot level and stays an ilvl upgrade")
+r = ns:ResultForDungeon(ns.dungeonByMapID[587])
+byItem = {}
+for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
+check(byItem[1002].freeLevel == 308 and not byItem[1002].matched and byItem[1002].class == ns.UPGRADE_NONE, "trinket pair: the weaker trinket's 308 is the free level; a 308 drop with no better stats is nothing")
+ns.db.countIlvlUpgrades = false
+ns:Evaluate()
+r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+check(r3.upgrades == 1, "stat upgrades follow the immediate-upgrade setting")
+ns.db.countIlvlUpgrades = true
+ns:SetMatchLevel(false)
+ns:Evaluate()
+r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+byItem = {}
+for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
+check(byItem[1008].class == ns.UPGRADE_NONE and byItem[1008].gain == -3 and not byItem[1008].matched and not byItem[1008].freeLevel, "off: the +8 chest is judged at 308 again")
+-- the client's watermarks: Chest 318, Rings 330, Trinkets 305
+_G.WATERMARKS = { [3] = 318, [9] = 330, [10] = 305 }
+ns:SetMatchLevel(true)
+ns:SetTargetKey(10); RunTimers()
+check(ns.watermarks[3] == 318 and ns.watermarks[9] == 330 and ns.watermarkSource == "api", "watermarks read from C_ItemUpgrade")
+r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
+byItem = {}
+for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
+m = byItem[1008].matched
+check(m and m.ilvl == 318 and m.step == 5 and byItem[1008].class == ns.UPGRADE_ILVL and byItem[1008].gain == 7, "chest drop (311 Hero 3/6) raised to the 318 mark: Hero 5/6, +7 over the chest")
+m = byItem[1005].matched
+check(m and m.ilvl == 321 and m.step == 6 and byItem[1005].class == ns.UPGRADE_TRACK, "ring drop raised to the top of its track (Hero 6/6), not to the 330 mark")
+m = byItem[1005].voidcoreMatched
+check(m and m.ilvl == 328 and m.step == 4 and m.track.key == "Myth", "the ring's Myth roll goes to Myth 4/6 (328), the last step under 330")
+local chestItem
+for _, it in ipairs(ns:GetDungeonLoot(249)) do if it.itemID == 1008 then chestItem = it end end
+local ml, mk = ns:LinkForContext(chestItem, byItem[1008].matched)
+check(mk == "exact" and BonusOfLink(ml) == BonusFor(4, 5), "the tooltip link is the item at Hero 5/6")
+r = ns:ResultForDungeon(ns.dungeonByMapID[587])
+byItem = {}
+for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
+check(byItem[1002].freeLevel == 308 and not byItem[1002].matched, "a mark under the weaker trinket (305) never lowers the free level")
+_G.WATERMARKS = nil
+ns:SetMatchLevel(false)
+ns:ScanGear()
+RunTimers()
+check(ns.watermarks[3] == nil and ns.watermarkSource == "gear", "watermarks cleared when the client reports nothing")
 
 -- slot states
 ns.cdb.slotState[1] = "skip"

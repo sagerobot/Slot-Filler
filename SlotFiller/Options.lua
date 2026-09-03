@@ -79,6 +79,10 @@ function ns:BuildSettingsPage(page)
     AddCheck("Count immediate item level upgrades",
         "Also count drops that are a higher item level than your current item even when they would not upgrade further than it (same or lower track).",
         "countIlvlUpgrades")
+    local match = AddCheck("Match drops to your slot's item level",
+        "Judge every drop as upgraded free to the item level you already have in that slot (rings, trinkets and one-handers: the lower of the pair). Same-level drops with better stats then count as upgrades. Also on the toolbar.",
+        "matchLevel")
+    match.set = function(v) ns:SetMatchLevel(v) end
     AddCheck("Hide dungeons and bosses with nothing for you", "Hide dungeons and raid bosses with no upgrade drops and no wanted items.", "hideEmptyDungeons")
     AddCheck("Only list upgrades and wanted items under a dungeon",
         "Hide the other drops when a dungeon is expanded.",

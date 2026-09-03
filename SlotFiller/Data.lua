@@ -137,15 +137,17 @@ ns.NAME_ALIASES = {
 -- Upgrade classes
 -------------------------------------------------------------------------------
 ns.UPGRADE_NONE = 0
-ns.UPGRADE_ILVL = 1   -- immediate ilvl gain, same or lower potential
-ns.UPGRADE_TRACK = 2  -- higher fully-upgraded potential
-ns.UPGRADE_WANT = 3   -- user-flagged
+ns.UPGRADE_STAT = 1   -- same level once upgraded free, better stats (Match level only)
+ns.UPGRADE_ILVL = 2   -- immediate ilvl gain, same or lower potential
+ns.UPGRADE_TRACK = 3  -- higher fully-upgraded potential
+ns.UPGRADE_WANT = 4   -- user-flagged
 
 ns.UPGRADE_COLOR = {
-    [0] = { 0.55, 0.55, 0.55 },
-    [1] = { 1.00, 0.82, 0.00 },
-    [2] = { 0.10, 1.00, 0.10 },
-    [3] = { 0.40, 0.75, 1.00 },
+    [ns.UPGRADE_NONE] = { 0.55, 0.55, 0.55 },
+    [ns.UPGRADE_STAT] = { 1.00, 0.60, 0.25 },
+    [ns.UPGRADE_ILVL] = { 1.00, 0.82, 0.00 },
+    [ns.UPGRADE_TRACK] = { 0.10, 1.00, 0.10 },
+    [ns.UPGRADE_WANT] = { 0.40, 0.75, 1.00 },
 }
 
 -- Nebulous Voidcore (bonus roll) accent colour
@@ -153,8 +155,9 @@ ns.VC_COLOR = { 0.78, 0.55, 1.00 }
 ns.VC_HEX = "|cffc78cff"
 
 ns.UPGRADE_LABEL = {
-    [0] = "no upgrade",
-    [1] = "ilvl upgrade",
-    [2] = "track upgrade",
-    [3] = "wanted",
+    [ns.UPGRADE_NONE] = "no upgrade",
+    [ns.UPGRADE_STAT] = "stat upgrade",
+    [ns.UPGRADE_ILVL] = "ilvl upgrade",
+    [ns.UPGRADE_TRACK] = "track upgrade",
+    [ns.UPGRADE_WANT] = "wanted",
 }
