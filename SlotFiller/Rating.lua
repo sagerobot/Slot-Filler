@@ -308,6 +308,20 @@ function ns:SetRatingRuns(count)
     self:Fire("RATING_UPDATED")
 end
 
+-- Order of the planned runs: "rating" (highest key first) or "gear" (most
+-- usable drops at the planned key first). Picking one returns the list to
+-- plan order.
+function ns:RatingOrder()
+    local order = self.db and self.db.ioOrder
+    return order == "gear" and "gear" or "rating"
+end
+
+function ns:SetRatingOrder(order)
+    self.db.ioOrder = order == "gear" and "gear" or "rating"
+    self.db.ioSort = "plan"
+    self:Fire("RATING_UPDATED")
+end
+
 -------------------------------------------------------------------------------
 -- Planner
 -------------------------------------------------------------------------------

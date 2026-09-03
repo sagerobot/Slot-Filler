@@ -45,6 +45,9 @@ ns.DEFAULTS = {
         hideEmptyDungeons = false,
         -- Hide non-upgrade items inside dungeon lists.
         hideNonUpgrades = false,
+        -- Tier tokens as the token row with the set piece beneath (false:
+        -- the piece in the token's place).
+        nestTokens = true,
         -- Move the Group Finder right when there is no room on the left.
         pushGroupFinder = true,
         -- Collapse item lists by default.
@@ -63,6 +66,9 @@ ns.DEFAULTS = {
         ioRuns = nil,
         -- IO tab sorting: "plan" | "best" | "gain" | "name"
         ioSort = "plan",
+        -- IO tab plan order: "rating" (highest key first) | "gear" (most
+        -- usable drops at the planned key first)
+        ioOrder = "rating",
         -- Rating gain on group listings and keystone tooltips.
         ioBadge = true,
         -- Debug output.

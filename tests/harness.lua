@@ -155,6 +155,15 @@ local ITEMS = {
     [1007] = { "INVTYPE_CLOAK", 4, 1, 1, "Cloak of Testing" },
     [1008] = { "INVTYPE_CHEST", 4, 4, 1, "Chest of Testing", { HASTE = 70, MASTERY = 50 } },
     [2001] = { nil, 12, 0, 1, "Quest Thing" },
+    [1010] = { "", 15, 0, 1, "Legguard Token", nil, "LEGSSLOT" }, -- tier token: not equippable, the journal names its slot
+    [270912] = { "", 15, 0, 1, "Venomcast Idol" }, -- a real one: no slot named, the season table knows it
+    [270909] = { "", 15, 0, 1, "Slumbering Coil Curio" }, -- traded for any set slot
+    -- the class set from the journal's Class Sets tab
+    [7001] = { "INVTYPE_HEAD", 4, 3, 1, "Venom Hood", { CRIT = 60, HASTE = 40 } },
+    [7003] = { "INVTYPE_SHOULDER", 4, 3, 1, "Venom Mantle", { HASTE = 60, VERS = 40 } },
+    [7005] = { "INVTYPE_CHEST", 4, 3, 1, "Venom Hauberk", { HASTE = 70, MASTERY = 30 } },
+    [7010] = { "INVTYPE_HAND", 4, 3, 1, "Venom Grips", { CRIT = 50, VERS = 50 } },
+    [7007] = { "INVTYPE_LEGS", 4, 3, 1, "Venom Legguards", { MASTERY = 60, HASTE = 40 } },
     -- equipped
     [5001] = { "INVTYPE_HEAD", 4, 4, 1, "Old Helm", { HASTE = 80, MASTERY = 40 } },
     [5013] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket A" },
@@ -214,6 +223,8 @@ _G.C_Item = {
         return id, "Armor", "Plate", it[1], it[4], it[2], it[3]
     end,
     GetDetailedItemLevelInfo = function(link)
+        local uid = tonumber(tostring(link):match("item:(%d+)"))
+        if UNCACHED and UNCACHED[uid] then return nil end
         local _, _, ilvl = BonusInfo(BonusOfLink(link))
         if ilvl then return ilvl end -- a track bonus sets the level even with a context
         if ContextOf(link) == "23" then return 292 end
@@ -221,7 +232,14 @@ _G.C_Item = {
         local id = tonumber(tostring(link):match("item:(%d+)"))
         return EQUIPPED_ILVL and EQUIPPED_ILVL[id] or 0
     end,
-    GetItemInfo = function() return nil end,
+    GetItemInfo = function(idOrLink)
+        local id = tonumber(idOrLink)
+        local it = id and ITEMS[id]
+        if it and id >= 7000 then return it[5], string.format("|cffa335ee|Hitem:%d::::::::80:72::::::|h[%s]|h|r", id, it[5]) end
+        return nil
+    end,
+    IsItemDataCachedByID = function(id) return not (UNCACHED and UNCACHED[id]) end,
+    RequestLoadItemDataByID = function(id) _G.REQUESTED_ITEMS = (REQUESTED_ITEMS or 0) + 1 end,
     GetItemCount = function(id) return BAGS[id] or 0 end,
     GetItemStats = function(link)
         local id = tonumber(tostring(link):match("item:(%d+)"))
@@ -367,7 +385,7 @@ local LOOT = {
 -- raids (tier 2): a multi-boss raid and the one-boss lair, which has a
 -- "World" difficulty (205) in place of LFR. Later bosses drop a step higher.
 local RAIDS = {
-    { id = 1500, name = "Venomous Abyss", diffs = { [17] = true, [14] = true, [15] = true, [16] = true },
+    { id = 1500, name = "Serpent Hollow", diffs = { [17] = true, [14] = true, [15] = true, [16] = true },
       bosses = { { id = 3001, name = "Nek'zali", step = 1 }, { id = 3002, name = "The Twin Fangs", step = 2 } } },
     { id = 1501, name = "The Tidebound Grotto", diffs = { [205] = true, [14] = true, [15] = true, [16] = true },
       bosses = { { id = 3010, name = "Nymrissa Wavecaller", step = 1 } } },
@@ -376,12 +394,21 @@ local RAIDS = {
     { id = 1502, name = "Midnight", diffs = { [205] = true, [14] = true }, display = false,
       bosses = { { id = 3020, name = "Lu'ashal", step = 1 } } },
 }
-local RAID_LOOT = { [3001] = { 1001, 1005 }, [3002] = { 1008, 1009 }, [3010] = { 1003, 1002 }, [3020] = { 1001 } }
+local RAID_LOOT = { [3001] = { 1001, 1005 }, [3002] = { 1008, 1009, 1010, 270912, 270909 }, [3010] = { 1003, 1002 }, [3020] = { 1001 } }
 local RAID_TRACK = { [17] = 2, [205] = 2, [14] = 3, [15] = 4, [16] = 5 } -- difficulty -> track index
 local function RaidByID(id) for _, r in ipairs(RAIDS) do if r.id == id then return r end end end
 local function BossByID(id) for _, r in ipairs(RAIDS) do for _, b in ipairs(r.bosses) do if b.id == id then return b end end end end
 local ej = { tier = 1, instance = nil, encounter = nil, diff = 23, classID = 0, specID = 0, preview = 0 }
 local lootDelayed = { [1309] = 1 } -- first read has no links
+_G.C_LootJournal = {
+    GetClassAndSpecFilters = function() return 0, 0 end,
+    SetClassAndSpecFilters = function(c, s) _G.LJ_FILTER = { c, s } end,
+    GetFilteredItemSets = function() return { { setID = 900, name = "Old Set", itemLevel = 250 }, { setID = 901, name = "Venom Set", itemLevel = 279 } } end,
+    GetItemSetItems = function(setID)
+        if setID ~= 901 then return {} end
+        return { { itemID = 7001 }, { itemID = 7003 }, { itemID = 7005 }, { itemID = 7010 }, { itemID = 7007 } }
+    end,
+}
 _G.EJ_GetNumTiers = function() return 2 end
 _G.EJ_GetCurrentTier = function() return ej.tier end
 _G.EJ_SelectTier = function(t) ej.tier = t end
@@ -435,7 +462,8 @@ _G.C_EncounterJournal = {
             if not id then return nil end
             local boss = BossByID(ej.encounter)
             local link = LinkWithBonus(id, BonusFor(RAID_TRACK[ej.diff] or 4, boss.step))
-            return { itemID = id, encounterID = ej.encounter, name = ITEMS[id][5], link = link, icon = 1, slot = "Slot", armorType = "Plate" }
+            return { itemID = id, encounterID = ej.encounter, name = ITEMS[id][5], link = link, icon = 1,
+                slot = ITEMS[id][7] and _G[ITEMS[id][7]] or "Slot", armorType = "Plate" }
         end
         local id = LOOT[ej.instance] and LOOT[ej.instance][i]
         if not id then return nil end
@@ -537,22 +565,70 @@ check(ns.dungeonByMapID[587].journalID == 1304, "journal instance via GetInstanc
 
 -- raids: the season's raids and bosses, loot per difficulty
 local raids = ns:GetRaids()
-check(#raids == 2 and raids[1].name == "Venomous Abyss" and #raids[1].bosses == 2 and #raids[2].bosses == 1, "season raids and bosses read from the journal (" .. #raids .. ")")
+check(#raids == 2 and raids[1].name == "Serpent Hollow" and #raids[1].bosses == 2 and #raids[2].bosses == 1, "season raids and bosses read from the journal (" .. #raids .. ")")
 check(raids[2].name == "The Tidebound Grotto", "the world-boss entry (no difficulty selector) is left out; the lair stays")
 local nek, twin, nym = raids[1].bosses[1], raids[1].bosses[2], raids[2].bosses[1]
 check(nek.loot.heroic and #nek.loot.heroic.items == 2 and nek.loot.lfr and nek.loot.normal and nek.loot.mythic, "boss loot scanned at every difficulty")
 check(raids[2].difficulties.lfr == 205 and nym.loot.lfr and #nym.loot.lfr.items == 2, "the lair's World difficulty fills the LFR slot")
 check(nek.portrait == 4242, "boss portrait kept for the row icon")
+local tokenItem = twin.loot.heroic.items[3]
+check(tokenItem and tokenItem.itemID == 1010 and tokenItem.token and tokenItem.equipLoc == "INVTYPE_LEGS", "a tier token is kept under the slot the journal names")
+local idol = twin.loot.heroic.items[4]
+check(idol and idol.itemID == 270912 and idol.token and idol.equipLoc == "INVTYPE_HAND", "the season's own tokens are known by id: Venomcast Idol is hands")
+local curio = twin.loot.heroic.items[5]
+check(curio and curio.itemID == 270909 and curio.token and curio.equipLoc == "TIER_ANY", "the Curio is a token for any set slot")
+check(ns.loot.classSet and ns.loot.classSet.name == "Venom Set" and ns.loot.classSet.pieces.INVTYPE_HAND.itemID == 7010, "the class set with the highest base level is read from the Class Sets tab")
+check(idol.piece and idol.piece.itemID == 7010 and idol.piece.name == "Venom Grips", "the hands token carries the class's hands piece")
+check(curio.pieces and #curio.pieces == 5 and curio.pieces[1].itemID == 7001 and curio.pieces[5].itemID == 7007, "the Curio carries all five pieces")
 check(ns.cdb.lootCache[30][72].raids == raids, "raids cached with the dungeons")
 local hctx = ns:GetRaidContext("heroic", nek)
 check(hctx.raid and hctx.ilvl == 305 and hctx.track.key == "Hero" and hctx.step == 1 and hctx.source == "journal", "Heroic boss drop: Hero 1/6 from the journal link")
 check(hctx.voidcore and hctx.voidcore.ilvl == 318 and hctx.voidcore.track.key == "Myth" and hctx.voidcore.step == 1, "Heroic Voidcore roll: Myth 1/6")
 check(ns:GetRaidContext("heroic", twin).ilvl == 308, "a later boss drops higher within the track (308 Hero 2/6)")
+-- after a login the client may not hold the later boss's items yet (their
+-- links answer nothing): the level remembered at scan time still stands,
+-- the items are asked for once, and their arrival evaluates again
+check(twin.loot.heroic.items[1].ilvl == 308, "each item's level is remembered at scan time")
+_G.UNCACHED = { [1008] = true, [1009] = true, [1010] = true, [270912] = true, [270909] = true }
+local itemsBefore = REQUESTED_ITEMS or 0
+ns:Evaluate()
+local rbCtx = ns.resultByEncounter[3002].ctx
+check(rbCtx.ilvl == 308 and rbCtx.source == "journal", "uncached items: the later boss is still judged at 308 Hero 2/6 (" .. tostring(rbCtx.ilvl) .. " " .. tostring(rbCtx.source) .. ")")
+local remembered = {}
+for i, it in ipairs(twin.loot.heroic.items) do remembered[i] = it.ilvl; it.ilvl = nil end
+ns:Evaluate()
+rbCtx = ns.resultByEncounter[3002].ctx
+check(rbCtx.ilvl == 305 and rbCtx.source == "track", "without a remembered level an unloaded link falls back to Hero 1/6")
+for i, it in ipairs(twin.loot.heroic.items) do it.ilvl = remembered[i] end
+check((REQUESTED_ITEMS or 0) == itemsBefore + 5 and ns.itemRequests[1008] == true, "each missing item is asked for once")
+ns:Evaluate()
+check((REQUESTED_ITEMS or 0) == itemsBefore + 5, "evaluating again asks for nothing")
+_G.UNCACHED = nil
+ns.eventFrame._scripts.OnEvent(ns.eventFrame, "ITEM_DATA_LOAD_RESULT", 1008, true)
+ns.eventFrame._scripts.OnEvent(ns.eventFrame, "ITEM_DATA_LOAD_RESULT", 1009, true)
+RunTimers()
+check(ns.resultByEncounter[3002].ctx.ilvl == 308 and ns.resultByEncounter[3002].ctx.source == "journal", "when the items arrive the boss is judged at 308 Hero 2/6 again")
+check(ns.itemRequests[1008] == false, "an answered item is not asked again")
 local mctx = ns:GetRaidContext("mythic", nek)
 check(mctx.ilvl == 318 and mctx.voidcore.ilvl == 334 and mctx.voidcore.potential == 334, "Mythic: Myth 1/6 drop, fully upgraded Voidcore roll")
 local lctx = ns:GetRaidContext("lfr", nek)
 check(lctx.ilvl == 279 and lctx.track.key == "Veteran" and lctx.voidcore.ilvl == 292 and lctx.voidcore.track.key == "Champion", "LFR: Veteran drop, Champion 1/6 roll")
 check(ns:GetRaidContext("normal").ilvl == 292 and ns:GetRaidContext("normal").source == "track", "without a boss the track's first step stands in")
+-- the season table ships the real raid's levels: by boss name, else by position
+local va = { name = "The Venomous Abyss", bosses = {} }
+local function VABoss(name, index) local b = { name = name, index = index, loot = {} }; va.bosses[#va.bosses + 1] = b; return b end
+local nekReal, explorers, vashnik, ulatek, unknown = VABoss("Nek'zali the Soulcoiler", 1), VABoss("The Lost Explorers", 3), VABoss("Vashnik the Malignant", 4), VABoss("Ula'tek", 8), VABoss("Someone New", 5)
+local hero, myth, vet = ns.trackByKey.Hero, ns.trackByKey.Myth, ns.trackByKey.Veteran
+check(ns:ShippedBossLevel(va, nekReal, "heroic", hero) == 305 and ns:ShippedBossLevel(va, explorers, "heroic", hero) == 308, "shipped levels: Nek'zali Hero 1/6, the Lost Explorers Hero 2/6")
+check(ns:ShippedBossLevel(va, vashnik, "mythic", myth) == 324 and ns:ShippedBossLevel(va, ulatek, "heroic", hero) == 315, "Vashnik Myth 3/6, Ula'tek Hero 4/6")
+check(ns:ShippedBossLevel(va, ulatek, "mythic", myth) == 344, "the last two Mythic bosses leave the track at 344")
+check(ns:ShippedBossLevel(va, unknown, "heroic", hero) == 311, "an unknown name falls back to its journal position (5th: Hero 3/6)")
+check(ns:ShippedBossLevel({ name = "Tidebound Grotto" }, { name = "Nymrissa Wavecaller", index = 1 }, "lfr", vet) == 279, "the lair's World drop is Veteran 1/6")
+check(ns:ShippedBossLevel(ns:GetRaids()[1], nek, "heroic", hero) == nil, "a raid the table does not know gets nothing shipped")
+local uctx = ns:GetRaidContext("mythic", ulatek, va)
+check(uctx.ilvl == 344 and uctx.source == "season" and uctx.voidcore.ilvl == 344 and uctx.potential == 344, "Ula'tek on Mythic: 344 from the season table, the roll no lower")
+local ectx = ns:GetRaidContext("heroic", explorers, va)
+check(ectx.ilvl == 308 and ectx.step == 2 and ectx.source == "season" and ectx.voidcore.ilvl == 318, "the Lost Explorers on Heroic: Hero 2/6 from the season table, Myth 1/6 roll")
 check(ns.journalTier[1304] == 2, "instance mapped to its last (current season) tier")
 check(ns.loot.dungeons[587].difficulty == 8, "Murder Row read at Mythic Keystone difficulty (" .. tostring(ns.loot.dungeons[587].difficulty) .. ")")
 
@@ -628,13 +704,13 @@ RunTimers()
 -- the Gear tab draws from dungeons, raids or both
 ns.db.gearSource = "raid"
 local sm = ns:SlotSummary()
-check(sm[1].count == 1 and sm[1].sources["b3001"] and not sm[1].sources["d587"], "Gear tab from raids only: the head upgrade comes from Nek'zali")
+check(sm[1].count == 2 and sm[1].sources["b3001"] and sm[1].sources["b3002"] and not sm[1].sources["d587"], "Gear tab from raids only: head upgrades from Nek'zali and the Curio's hood")
 ns.db.gearSource = "mplus"
 sm = ns:SlotSummary()
 check(sm[1].count == 1 and sm[1].sources["d587"] and not sm[1].sources["b3001"], "from dungeons only: from Murder Row")
 ns.db.gearSource = "both"
 sm = ns:SlotSummary()
-check(sm[1].count == 2, "both: two head upgrades")
+check(sm[1].count == 3, "both: three head upgrades")
 
 -- Voidcore targets: a second flag per item, never mixed into the counts
 ns:SetVoidcoreTarget(1008, true)
@@ -643,6 +719,31 @@ check(ns:IsVoidcoreTarget(1008) and ns:VoidcoreItemIDs()[1] == 1008, "chest mark
 r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
 check(r3.voidcore == 1 and r3.voidcoreItems[1].item.itemID == 1008 and r3.upgrades == 1, "Kings' Rest lists it as a Voidcore target without counting it as a drop upgrade")
 check(ns.resultByEncounter[3002].voidcore == 1, "and so does the boss that drops it")
+local tokenEval, idolEval, curioEval
+for _, e in ipairs(ns.resultByEncounter[3002].items) do
+    if e.token and e.token.itemID == 1010 then tokenEval = e end
+    if e.token and e.token.itemID == 270912 then idolEval = e end
+    if e.token and e.token.itemID == 270909 then curioEval = e end
+end
+check(tokenEval and tokenEval.item.itemID == 7007 and tokenEval.slotID == 7 and tokenEval.class == ns.UPGRADE_TRACK and tokenEval.reason == "empty slot",
+    "the legs token is judged as the class's legguards: a track upgrade for the empty slot")
+check(idolEval and idolEval.item.itemID == 7010 and idolEval.slotID == 10 and idolEval.stats and idolEval.stats.CRIT == 50, "the hands token is judged as the grips, stats and all")
+local tokenLink, tokenKind = ns:LinkForContext(curioEval.token, ns.resultByEncounter[3002].ctx)
+check(tokenLink == curioEval.token.link and tokenKind == "base", "a token's own link is shown, nothing rewritten")
+check(curioEval and curioEval.pieces and #curioEval.pieces == 5 and curioEval.item.itemID == 7003 and curioEval.slotID == 3 and curioEval.reason == "empty slot",
+    "the Curio stands as its best piece: the mantle for the empty shoulders")
+check(curioEval.pieces[1].item.itemID == 7001 and curioEval.pieces[1].slotID == 1 and curioEval.pieces[1].class == ns.UPGRADE_TRACK and not curioEval.pieces[1].pieces,
+    "each of its pieces is judged for its own slot")
+check(ns.resultByEncounter[3002].upgrades == 4, "the Curio counts once in the boss's drops (" .. ns.resultByEncounter[3002].upgrades .. ")")
+-- the omni token cannot be bonus rolled; slot tokens can
+check(curio.noRoll and curio.pieces[1].noRoll and not idol.noRoll and not idol.piece.noRoll, "the Curio and its pieces are marked as not rollable, slot tokens are not")
+check(curioEval.voidcore == nil and curioEval.pieces[1].voidcore == nil and idolEval.voidcore and idolEval.voidcore.class == ns.UPGRADE_TRACK,
+    "no roll verdict for the Curio's pieces; the hands token's grips roll as Myth 1/6")
+ns:SetVoidcoreTarget(7003, true)
+ns:Evaluate()
+check(ns.resultByEncounter[3002].voidcore == 1 and ns:IsVoidcoreTarget(7003), "a Curio piece marked as a target is not counted for the boss")
+ns:SetVoidcoreTarget(7003, false)
+ns:Evaluate()
 sm = ns:SlotSummary()
 check(sm[5].voidcore[1] and sm[5].voidcore[1].source == "Kings' Rest" and sm[5].count == 0, "slot summary lists the Voidcore target, count unchanged")
 ns:SetItemState(1008, "exclude")
@@ -1140,6 +1241,75 @@ check(raidPage.Strip.Tabs.selectedTabID == "heroic", "difficulty strip shows Her
 ns:SetRaidDifficulty("mythic")
 RunTimers()
 check(raidPage.Strip.Tabs.selectedTabID == "mythic", "difficulty strip follows the setting")
+-- the Curio row opens into its five pieces
+ns.uiExpandedEncounterID = 3002
+ns:RefreshWindow()
+local curioRow
+for _, it in ipairs(ns.UI.Pools.raidItems) do if it:IsShown() and it.eval and it.eval.token and it.eval.token.itemID == 270909 then curioRow = it end end
+check(curioRow and curioRow.Name:GetText():find("Slumbering Coil Curio", 1, true) and curioRow.Arrow:IsShown() and #curioRow.eval.pieces == 5, "the Curio row shows the token with an arrow")
+local rowsBefore = 0
+for _, it in ipairs(ns.UI.Pools.raidItems) do if it:IsShown() then rowsBefore = rowsBefore + 1 end end
+curioRow:GetScript("OnClick")(curioRow, "LeftButton")
+local rowsAfter, pieceNames = 0, {}
+for _, it in ipairs(ns.UI.Pools.raidItems) do
+    if it:IsShown() then
+        rowsAfter = rowsAfter + 1
+        if it.eval and it.eval.item.piece and not it.eval.pieces then pieceNames[#pieceNames + 1] = it.eval.item.name end
+    end
+end
+check(ns.uiExpandedTokenID == 270909 and rowsAfter == rowsBefore + 5 and #pieceNames == 5, "clicking it lists the five pieces beneath (" .. rowsAfter .. " rows, was " .. rowsBefore .. ")")
+curioRow:GetScript("OnClick")(curioRow, "LeftButton")
+check(ns.uiExpandedTokenID == nil, "clicking again closes it")
+-- a slot token: the token row with its piece beneath, or the piece in its place
+local function TokenRow(id)
+    for _, it in ipairs(ns.UI.Pools.raidItems) do
+        if it:IsShown() and it.eval and it.eval.token and it.eval.token.itemID == id then return it end
+    end
+end
+local legsRow = TokenRow(1010)
+check(legsRow and legsRow.Name:GetText():find("Legguard Token", 1, true) and legsRow.Arrow:IsShown() and legsRow.eval.pieces and #legsRow.eval.pieces == 1,
+    "a slot token shows as the token with an arrow")
+local before = 0
+for _, it in ipairs(ns.UI.Pools.raidItems) do if it:IsShown() then before = before + 1 end end
+legsRow:GetScript("OnClick")(legsRow, "LeftButton")
+local after, shownPiece = 0, nil
+for _, it in ipairs(ns.UI.Pools.raidItems) do
+    if it:IsShown() then
+        after = after + 1
+        if it.eval and it.eval.item.itemID == 7007 and not it.eval.pieces then shownPiece = it end
+    end
+end
+check(ns.uiExpandedTokenID == 1010 and after == before + 1 and shownPiece and shownPiece.Name:GetText():find("Venom Legguards", 1, true), "clicking it shows the legguards beneath")
+check(shownPiece.VC:IsShown() and legsRow.VC:IsShown(), "slot token rows keep the Voidcore star")
+local curioRow2
+for _, it in ipairs(ns.UI.Pools.raidItems) do if it:IsShown() and it.eval and it.eval.token and it.eval.token.itemID == 270909 then curioRow2 = it end end
+check(curioRow2 and not curioRow2.VC:IsShown(), "the Curio row has no Voidcore star")
+-- the token row's tooltip is the token's own; the piece row's is the piece
+local tipLinks, tipLines = {}, {}
+GameTooltip.SetHyperlink = function(_, l) tipLinks[#tipLinks + 1] = l end
+GameTooltip.AddLine = function(_, t) tipLines[#tipLines + 1] = tostring(t) end
+ns:ShowItemTooltip(legsRow)
+check(tipLinks[1] == legsRow.eval.token.link and tipLinks[1]:find("Legguard Token", 1, true), "the token row shows the token's own tooltip")
+local turns, stats = false, false
+for _, l in ipairs(tipLines) do
+    if l:find("turns into", 1, true) and l:find("Venom Legguards", 1, true) then turns = true end
+    if l:find("^Stats:") then stats = true end
+end
+check(turns and not stats, "it says what the token turns into and shows no stats of its own")
+tipLinks, tipLines = {}, {}
+ns:ShowItemTooltip(shownPiece)
+check(tipLinks[1] and tipLinks[1]:find("Venom Legguards", 1, true), "the piece row shows the piece")
+GameTooltip.SetHyperlink, GameTooltip.AddLine = nil, nil
+ns.uiExpandedTokenID = nil
+ns.db.nestTokens = false
+ns:RefreshWindow()
+legsRow = TokenRow(1010)
+check(legsRow and legsRow.Name:GetText():find("Venom Legguards", 1, true) and not legsRow.Arrow:IsShown(), "with the setting off the piece takes the token's place")
+curioRow = nil
+for _, it in ipairs(ns.UI.Pools.raidItems) do if it:IsShown() and it.eval and it.eval.token and it.eval.token.itemID == 270909 then curioRow = it end end
+check(curioRow and curioRow.Arrow:IsShown() and curioRow.Name:GetText():find("Curio", 1, true), "the any-slot token still opens into its pieces")
+ns.db.nestTokens = true
+ns.uiExpandedEncounterID = nil
 ns:SetRaidDifficulty("heroic")
 RunTimers()
 ns.db.gearSource = "raid"
@@ -1227,6 +1397,22 @@ ns.db.ioSort = "best"
 ns:RefreshWindow()
 check(ns.UI.Pools.ioRows[1].mapID == 249 and ns.UI.Pools.ioRows[2].mapID == 584, "sorting by best puts the lowest score first")
 ns.db.ioSort = "plan"
+-- the plan ordered by gear drops
+check(ioPage.Strip.Order.Text:GetText():find("Rating gained", 1, true) ~= nil and ioPage.Strip.Note:GetText() == "", "order dropdown shows rating gained by default")
+local orderEntries = ioPage.Strip.Order.entries()
+check(#orderEntries == 2 and orderEntries[1].checked and not orderEntries[2].checked, "order menu: rating gained checked")
+ns.db.ioSort = "best"
+orderEntries[2].onClick()
+check(ns:RatingOrder() == "gear" and ns.db.ioSort == "plan" and ioPage.Strip.Order.Text:GetText():find("Gear drops", 1, true) ~= nil,
+    "picking gear drops sets the order and returns to plan sorting")
+local g1, g2, g3 = ns.UI.Pools.ioRows[1], ns.UI.Pools.ioRows[2], ns.UI.Pools.ioRows[3]
+check(g1.mapID == 584 and g1.gear.upgrades == 2 and g2.mapID == 249 and g2.gear.upgrades == 1,
+    "by gear the planned +11 with two drops comes before the planned +12 with one")
+check(g3.mapID == 587 and g3.gear.upgrades == 3 and not g3.run, "the unplanned dungeon stays below the plan even with more drops")
+check(g1.Name:GetText():find("Vale  |cff", 1, true) and g1.Name:GetText():find("2|r", 1, true) and g1.gearLevel == 11, "the drop count sits next to the name, judged at the planned key")
+check(ioPage.Strip.Note:GetText() ~= "", "the strip explains the count")
+ns:SetRatingOrder("rating")
+check(ns.UI.Pools.ioRows[1].mapID == 249 and ioPage.Strip.Note:GetText() == "", "back to rating order: highest key first, no note")
 -- rating on group listings and keystones
 local part, plevel, pgain, planned = ns.RatingPartForDungeon(ns.dungeonByMapID[584])
 check(part and part:find("+35", 1, true) and plevel == 11 and planned, "listing badge: planned run gain")

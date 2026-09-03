@@ -87,6 +87,9 @@ function ns:BuildSettingsPage(page)
     AddCheck("Only list upgrades and wanted items under a dungeon",
         "Hide the other drops when a dungeon is expanded.",
         "hideNonUpgrades")
+    AddCheck("Show tier tokens as the token, the set piece beneath",
+        "A raid boss's tier token is judged as the set piece it makes for your class. On: the row shows the token; click it for the piece. Off: the piece takes the token's place. The last boss's any-slot token always lists its five pieces.",
+        "nestTokens")
 
     Header("Wanted list")
     local wantedRow = Row(28)

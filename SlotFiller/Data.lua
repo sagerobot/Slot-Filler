@@ -54,6 +54,15 @@ ns.SLOT_SHORT = {
     [16] = "MH", [17] = "OH",
 }
 
+-- Tier tokens are not equippable; the journal names the slot they turn
+-- into. slot key -> the inventory type the token stands for
+ns.SLOT_INVTYPE = {
+    HEAD = "INVTYPE_HEAD", NECK = "INVTYPE_NECK", SHOULDER = "INVTYPE_SHOULDER", BACK = "INVTYPE_CLOAK",
+    CHEST = "INVTYPE_CHEST", WRIST = "INVTYPE_WRIST", HANDS = "INVTYPE_HAND", WAIST = "INVTYPE_WAIST",
+    LEGS = "INVTYPE_LEGS", FEET = "INVTYPE_FEET", FINGER1 = "INVTYPE_FINGER", FINGER2 = "INVTYPE_FINGER",
+    TRINKET1 = "INVTYPE_TRINKET", TRINKET2 = "INVTYPE_TRINKET",
+}
+
 -------------------------------------------------------------------------------
 -- Inventory type (itemEquipLoc string) -> candidate equipment slot IDs.
 -- Weapons are resolved dynamically in Gear.lua based on what is equipped.
@@ -81,6 +90,9 @@ ns.INVTYPE_SLOTS = {
     INVTYPE_RANGED = { 16 },
     INVTYPE_RANGEDRIGHT = { 16 },
     INVTYPE_THROWN = { 16 },
+    -- a tier token traded for the set piece of any slot (Ula'tek's Curio):
+    -- head, shoulder, chest, hands, legs; the weakest of them is the target
+    TIER_ANY = { 1, 3, 5, 10, 7 },
 }
 
 -- Item classes/subclasses that are weapons (LE_ITEM_CLASS_WEAPON = 2).

@@ -241,7 +241,7 @@ function ns:RedundancySlotFor(item)
         local ok, v = pcall(C_ItemUpgrade.GetHighWatermarkSlotForItem, item.link)
         if ok and type(v) == "number" and not self.issecret(v) then r = v end
     end
-    if not r then
+    if not r and item.equipLoc ~= "TIER_ANY" then
         r = REDUNDANCY_BY_EQUIPLOC[item.equipLoc]
         if not r then
             local slots = self.INVTYPE_SLOTS[item.equipLoc]

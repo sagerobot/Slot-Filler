@@ -331,6 +331,8 @@ ns:On("TRACKS_CHANGED", function() ns:ClearLinkCache() end)
 -------------------------------------------------------------------------------
 function ns:LinkForContext(item, ctx)
     if not item or not item.link then return nil, "none" end
+    -- a tier token has no item level to rewrite; the token itself is shown
+    if item.token then return item.link, "base" end
     local base = item.link
     -- best journal preview link at or below the key
     if item.links then
@@ -406,6 +408,31 @@ function ns:PrintLinkDiagnostics()
             local link, kind = self:LinkForContext(it, ctx)
             local ri, rn, rc = self:ProbeLink(link)
             print(string.format("    result (%s): ilvl %s %s %s  %s", kind, tostring(ri), tostring(rn), tostring(rc), tostring(link):gsub("|", "||")))
+        end
+    end
+    -- raid bosses at the Raid tab's difficulty: the drop level each one is
+    -- judged at and where it came from, with every link's own level
+    local diffKey = self:GetRaidDifficulty()
+    local waiting = 0
+    for id, v in pairs(self.itemRequests or {}) do if v == true then waiting = waiting + 1 end end
+    for _, raid in ipairs(self:GetRaids()) do
+        print(string.format("  %s (%s%s)", raid.name, self:RaidDifficultyName(raid, diffKey), waiting > 0 and string.format(", %d items still loading", waiting) or ""))
+        local shownLink = false
+        for _, boss in ipairs(raid.bosses) do
+            local items = self:GetBossLoot(boss, diffKey) or {}
+            local bctx = self:GetRaidContext(diffKey, boss, raid)
+            local scanned, live = {}, {}
+            for _, it in ipairs(items) do
+                scanned[#scanned + 1] = tostring(it.ilvl)
+                live[#live + 1] = tostring(self.ItemLevelOf(it.link))
+            end
+            print(string.format("    %s: drop %s %s %s/%s (%s); levels at scan [%s], links now [%s]", boss.name, tostring(bctx.ilvl),
+                tostring(bctx.track and bctx.track.key), tostring(bctx.step), tostring(bctx.track and #bctx.track.ilvls),
+                tostring(bctx.source), table.concat(scanned, ","), table.concat(live, ",")))
+            if not shownLink and items[1] then
+                shownLink = true
+                print("      first link: " .. tostring(items[1].link):gsub("|", "||"))
+            end
         end
     end
 end

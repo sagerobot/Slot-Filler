@@ -39,6 +39,7 @@ ns.uiExpandedMapID = nil
 ns.uiExpandedEncounterID = nil
 ns.uiExpandedSlotID = nil
 ns.uiExpandedRatingMapID = nil
+ns.uiExpandedTokenID = nil     -- an any-slot tier token listing its pieces
 
 local NONE, STAT, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_STAT, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
 local ARROW_ATLAS = "Azerite-PointingArrow"
@@ -64,6 +65,13 @@ end
 
 local function ItemName(item)
     return item.link and item.link:match("%[(.-)%]") or item.name or ("item " .. tostring(item.itemID))
+end
+
+-- A tier token shown as the token, its piece(s) listed beneath on a click:
+-- always for a token traded for any slot, by setting for the others.
+local function TokenNested(eval)
+    if not (eval and eval.pieces and eval.token) then return false end
+    return #eval.pieces > 1 or ns.db.nestTokens ~= false
 end
 
 local function QualityHex(item)
@@ -713,12 +721,33 @@ local function BuildIOPage(page)
         Tip(b, "ANCHOR_BOTTOM", "Max key", "Plans use no key above this. Grey: automatic, your highest timed key + 2. Right-click the box: back to automatic.")
     end
 
+    -- order strip: the planned runs by rating gained or by gear drops
+    local strip = CreateFrame("Frame", nil, page)
+    strip:SetPoint("TOPLEFT", 0, -IO_HEADER_H)
+    strip:SetPoint("TOPRIGHT", -GUTTER, -IO_HEADER_H)
+    strip:SetHeight(20)
+    strip.Order = Dropdown(strip, 150, 20, function()
+        local order = ns:RatingOrder()
+        return {
+            { text = "Rating gained", checked = order == "rating", onClick = function() ns:SetRatingOrder("rating") end },
+            { text = "Gear drops", checked = order == "gear", onClick = function() ns:SetRatingOrder("gear") end },
+        }
+    end)
+    strip.Order:SetPoint("LEFT", 0, 0)
+    Tip(strip.Order, "ANCHOR_BOTTOM", "Order", "Rating gained: highest key first. Gear drops: the dungeons with the most usable drops at the planned key first.")
+    strip.Note = Style.Text(strip, 10, 1, 1, 1, 0.53)
+    strip.Note:SetPoint("LEFT", strip.Order, "RIGHT", 8, 0)
+    strip.Note:SetPoint("RIGHT", 0, 0)
+    strip.Note:SetJustifyH("LEFT")
+    strip.Note:SetWordWrap(false)
+    page.Strip = strip
+
     local colHead = ColumnHeader(page, {
         { "plan", "Dungeon", nil, "Click a dungeon for its key ladder. Right-click to avoid it. Click here to sort by the plan." },
         { "best", "Best", COL_BEST, "Your best run this season: coloured when timed, grey when over time. Click to sort." },
         { "run", "Run", COL_RUN, "The key to time in the selected plan." },
         { "gain", "Gain", COL_GAIN, "Rating gained by timing that key. Click to sort." },
-    }, function(mode) ns.db.ioSort = mode end, IO_HEADER_H)
+    }, function(mode) ns.db.ioSort = mode end, IO_HEADER_H + STRIP_H)
     page.ColHead = colHead
     page.List, page.Content = ListPanel(page, colHead, 18)
     StatusLine(page)
@@ -1068,6 +1097,13 @@ local function NewItemRow(content, where)
     it.Icon:SetSize(ITEM_H - 4, ITEM_H - 4)
     it.Icon:SetPoint("LEFT", ROW_H + 6, 0)
     Style.SquareIcon(it.Icon, it)
+    -- a token traded for any set slot opens into its five pieces
+    it.Arrow = it:CreateTexture(nil, "ARTWORK")
+    it.Arrow:SetAtlas(ARROW_ATLAS)
+    it.Arrow:SetSize(8, 6)
+    it.Arrow:SetPoint("RIGHT", it.Icon, "LEFT", -4, 0)
+    it.Arrow:SetVertexColor(1, 1, 1, 0.6)
+    it.Arrow:Hide()
     -- wanted star
     it.Star = CreateFrame("Button", nil, it)
     it.Star:SetSize(18, 18)
@@ -1142,6 +1178,10 @@ local function NewItemRow(content, where)
             ChatEdit_InsertLink(self.eval.item.link)
         elseif IsModifiedClick("DRESSUP") and self.eval.item.link then
             DressUpItemLink(self.eval.item.link)
+        elseif TokenNested(self.eval) then
+            local id = self.eval.token.itemID
+            ns.uiExpandedTokenID = (ns.uiExpandedTokenID ~= id) and id or nil
+            ns:RefreshWindow()
         end
     end)
     it.tipFn = function(self) if self.eval then ns:ShowItemTooltip(self) end end
@@ -1154,6 +1194,7 @@ local function Acquire(pool, index, factory)
     local w = pool[index]
     if w then w:Show(); return w end
     w = factory()
+    w:Show()
     pool[index] = w
     return w
 end
@@ -1166,16 +1207,24 @@ local function FillItemRow(it, eval, whereText)
     local target = self:IsVoidcoreTarget(eval.item.itemID)
     local lit = counts or state == "want" or target
     it.eval = eval
-    it.Icon:SetTexture(eval.item.icon or 134400)
+    local nested = TokenNested(eval)
+    local shown = nested and eval.token or eval.item
+    it.Icon:SetTexture(shown.icon or 134400)
+    if nested then
+        it.Arrow:SetRotation(ns.uiExpandedTokenID == eval.token.itemID and 0 or math.rad(90))
+        it.Arrow:Show()
+    else
+        it.Arrow:Hide()
+    end
     if whereText then
         it.Where:SetText(whereText)
     else
         local slot = eval.slotID and self.SLOT_BY_ID[eval.slotID]
         it.Where:SetText(slot and (self.SLOT_SHORT[slot.id] or slot.key) or (eval.item.slotText or ""))
     end
-    local name = ItemName(eval.item)
+    local name = ItemName(shown)
     if lit then
-        it.Name:SetText(QualityHex(eval.item) .. name .. "|r")
+        it.Name:SetText(QualityHex(shown) .. name .. "|r")
         it.Name:SetAlpha(1)
     else
         it.Name:SetText(name)
@@ -1201,11 +1250,12 @@ local function FillItemRow(it, eval, whereText)
     SetStar(it.Star.Icon, state == "want")
     it.Star:Show()
     SetStar(it.VC.Icon, target, true)
-    it.VC:Show()
+    it.VC:SetShown(not eval.item.noRoll)
 end
 
 local function FillNoteRow(it, text)
     it.eval = nil
+    it.Arrow:Hide()
     it.Icon:SetTexture(nil)
     it.Where:SetText("")
     it.Name:SetText("|cff888888" .. text .. "|r")
@@ -1329,22 +1379,44 @@ function ns:ShowItemTooltip(btn)
     local ctx = btn.ctx or self.dropCtx
     local shift = IsShiftKeyDown and IsShiftKeyDown()
     GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-    local link, kind = self:LinkForContext(item, eval.matched or ctx or {})
+    -- a token row shows the token's own tooltip; the piece has its own row
+    local nested = TokenNested(eval)
+    local link, kind
+    if nested then
+        link, kind = eval.token.link, "token"
+    else
+        link, kind = self:LinkForContext(item, eval.matched or ctx or {})
+    end
     if link then
         GameTooltip:SetHyperlink(link)
     else
-        GameTooltip:SetItemByID(item.itemID)
+        GameTooltip:SetItemByID((nested and eval.token or item).itemID)
     end
     GameTooltip:AddLine(" ")
+    if eval.token then
+        local slot = eval.slotID and self.SLOT_BY_ID[eval.slotID]
+        local slotName = slot and (slot.name or slot.key) or "?"
+        if TokenNested(eval) and #eval.pieces > 1 then
+            GameTooltip:AddLine(string.format("%s: traded for the set piece of any slot. Best for you: %s. Click to list all five.",
+                ItemName(eval.token), slotName), 0.9, 0.9, 0.9, true)
+        elseif TokenNested(eval) then
+            GameTooltip:AddLine(string.format("%s: turns into %s (%s). Click to show it.", ItemName(eval.token), ItemName(eval.item), slotName), 0.9, 0.9, 0.9, true)
+        else
+            GameTooltip:AddLine("From " .. ItemName(eval.token) .. " (tier token)", 0.9, 0.9, 0.9)
+        end
+    end
     if btn.dungeonName then
         GameTooltip:AddLine("Drops in " .. btn.dungeonName, 0.9, 0.9, 0.9)
     end
-    if ctx and ctx.ilvl then
+    if ctx and ctx.ilvl and not nested then
         if kind == "exact" then
             local shown = ctx.raid and string.format("Shown as it drops on %s", ctx.difficultyName or "this difficulty")
                 or string.format("Shown as it drops from a +%d", ctx.key or 0)
             if eval.matched then shown = shown .. string.format(", upgraded free to %d", eval.matched.ilvl) end
             GameTooltip:AddLine("|cff888888" .. shown .. "|r")
+        elseif item.token then
+            GameTooltip:AddLine(item.equipLoc == "TIER_ANY" and "|cff888888Tier token: traded for your set piece of any slot; judged for the weakest|r"
+                or "|cff888888Tier token: turns into your set piece for this slot|r")
         else
             GameTooltip:AddLine("|cff888888Base item shown; the drop's own level is listed below|r")
         end
@@ -1354,7 +1426,7 @@ function ns:ShowItemTooltip(btn)
         local g = eval.equipped
         GameTooltip:AddLine(string.format("Would replace (%s): %s", slot.name or slot.key, EquippedDesc(g)), 0.9, 0.9, 0.9, true)
     end
-    if eval.stats then
+    if eval.stats and not nested then
         GameTooltip:AddLine(string.format("Stats: %s%s", self:StatText(eval.stats, eval.fit, true),
             eval.fit and string.format("  |cff888888%d%% match|r", eval.fit * 100 + 0.5) or ""), 1, 1, 1, true)
         if eval.equippedStats then
@@ -1403,7 +1475,9 @@ function ns:ShowItemTooltip(btn)
     GameTooltip:AddLine("  " .. Verdict(eval), 1, 1, 1, true)
     -- the Voidcore roll, on request
     local vc = ctx and ctx.voidcore
-    if vc and vc.ilvl and eval.voidcore then
+    if eval.item.noRoll then
+        GameTooltip:AddLine("|cff888888Not in the bonus roll pool|r")
+    elseif vc and vc.ilvl and eval.voidcore then
         if shift then
             GameTooltip:AddLine(string.format("%sVoidcore roll|r: |cffffffff%d|r %s%s", ns.VC_HEX, vc.ilvl,
                 TrackText(vc.track, vc.step),
@@ -1419,7 +1493,7 @@ function ns:ShowItemTooltip(btn)
         end
     end
     local state = self:GetItemState(item.itemID)
-    local target = self:IsVoidcoreTarget(item.itemID)
+    local target = self:IsVoidcoreTarget(item.itemID) and not item.noRoll
     GameTooltip:AddLine(" ")
     if state == "want" then GameTooltip:AddLine(Style.AccentHex() .. "On your wanted list|r") end
     if target then GameTooltip:AddLine(ns.VC_HEX .. "Voidcore target|r") end
@@ -1768,6 +1842,19 @@ local function RefreshRaid(page)
                                 it.ctx = r.ctx
                                 FillItemRow(it, eval)
                                 y = y + ITEM_H
+                                if TokenNested(eval) and self.uiExpandedTokenID == eval.token.itemID then
+                                    for _, pe in ipairs(eval.pieces) do
+                                        itemIndex = itemIndex + 1
+                                        local pit = Acquire(raidItems, itemIndex, function() return NewItemRow(content, false) end)
+                                        pit:ClearAllPoints()
+                                        pit:SetPoint("TOPLEFT", content, "TOPLEFT", 16, -y)
+                                        pit:SetWidth(width - 16)
+                                        pit.dungeonName = nil
+                                        pit.ctx = r.ctx
+                                        FillItemRow(pit, pe)
+                                        y = y + ITEM_H
+                                    end
+                                end
                             end
                         end
                         if shown == 0 then Note("No upgrades here on " .. diffName .. ".") end
@@ -1806,10 +1893,12 @@ local function DropsBySlot()
     local buckets = {}
     for _, r in ipairs(ns:GearResults()) do
         if r.scanned then
-            for _, eval in ipairs(r.items) do
-                if eval.slotID then
-                    buckets[eval.slotID] = buckets[eval.slotID] or {}
-                    table.insert(buckets[eval.slotID], { eval = eval, source = r.sourceName, ctx = r.ctx })
+            for _, top in ipairs(r.items) do
+                for _, eval in ipairs(top.pieces or { top }) do
+                    if eval.slotID then
+                        buckets[eval.slotID] = buckets[eval.slotID] or {}
+                        table.insert(buckets[eval.slotID], { eval = eval, source = r.sourceName, ctx = r.ctx })
+                    end
                 end
             end
         end
@@ -1998,6 +2087,11 @@ function ns:ShowRatingTooltip(row)
         local when = e.durationSec and (" " .. self:FormatDuration(e.durationSec)) or ""
         GameTooltip:AddLine(string.format("Best: +%d %s%s (%d)", e.level, e.timed and "timed" or "over time", when, self:Round(e.score)), 1, 1, 1)
     end
+    local gear = row.gear or (row.gearLevel and self:DropsAtKey(d, row.gearLevel))
+    if gear and gear.scanned then
+        GameTooltip:AddLine(string.format("Drops at +%d: %d upgrade%s%s.", row.gearLevel or 0, gear.upgrades, gear.upgrades == 1 and "" or "s",
+            gear.wanted > 0 and string.format(", %d wanted", gear.wanted) or ""), 1, 1, 1)
+    end
     if row.avoided then
         GameTooltip:AddLine("|cffff5555Avoided|r: left out of the plans.", 1, 1, 1)
     elseif row.run then
@@ -2059,17 +2153,24 @@ local function RefreshIO(page)
     local sortMode = db.ioSort or "plan"
     if sortMode ~= "best" and sortMode ~= "gain" and sortMode ~= "name" then sortMode = "plan" end
     if page.ColHead.selectedTabID ~= sortMode then Style.SelectTab(page.ColHead, sortMode) end
+    local byGear = self:RatingOrder() == "gear"
+    page.Strip.Order.Text:SetText("|cffaaaaaaOrder:|r " .. (byGear and "Gear drops" or "Rating gained"))
+    page.Strip.Note:SetText(byGear and "Usable drops at the planned key, next to the name." or "")
 
-    -- rows
+    -- rows; by gear, drops are judged at the planned key, else the first
+    -- key that gains, else the cap (the tooltip fetches them otherwise)
     local entries = {}
     for _, d in ipairs(self.dungeons) do
         local mapID = d.challengeMapID
         local e = self:DungeonRating(mapID)
+        local run = plan and plan.byMap[mapID] or nil
+        local gearLevel = run and run.level or e.floor or cap
         entries[#entries + 1] = {
-            d = d, mapID = mapID, e = e,
-            run = plan and plan.byMap[mapID] or nil,
+            d = d, mapID = mapID, e = e, run = run,
             avoided = self:IsDungeonAvoided(mapID),
             floorGain = e.floor and self:RatingGain(mapID, e.floor) or 0,
+            gear = byGear and self:DropsAtKey(d, gearLevel) or nil,
+            gearLevel = gearLevel,
         }
     end
     table.sort(entries, function(a, b)
@@ -2085,8 +2186,15 @@ local function RefreshIO(page)
             if ga ~= gb then return ga > gb end
             return a.d.name < b.d.name
         end
-        -- plan: planned runs first, highest key first, then the rest by score
+        -- plan: planned runs first, highest key first, then the rest by score;
+        -- by gear, the most usable drops first on both sides
         if (a.run ~= nil) ~= (b.run ~= nil) then return a.run ~= nil end
+        if byGear then
+            local ua, ub = a.gear and a.gear.upgrades or -1, b.gear and b.gear.upgrades or -1
+            if ua ~= ub then return ua > ub end
+            local wa, wb = a.gear and a.gear.wanted or 0, b.gear and b.gear.wanted or 0
+            if wa ~= wb then return wa > wb end
+        end
         if a.run and b.run then
             if a.run.level ~= b.run.level then return a.run.level > b.run.level end
             if a.run.gain ~= b.run.gain then return a.run.gain > b.run.gain end
@@ -2113,6 +2221,7 @@ local function RefreshIO(page)
         end)
         local d, e, run = entry.d, entry.e, entry.run
         row.mapID, row.dungeon, row.entry, row.run, row.avoided, row.hasPlan = entry.mapID, d, e, run, entry.avoided, plan ~= nil
+        row.gear, row.gearLevel = entry.gear, entry.gearLevel
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
         row:SetWidth(width)
@@ -2121,7 +2230,16 @@ local function RefreshIO(page)
         row.Icon:SetDesaturated(dim)
         row.Name:SetAlpha(dim and 0.45 or 1)
         row.Border:SetColorTexture(entry.avoided and 1 or 0, entry.avoided and 0.3 or 0, entry.avoided and 0.3 or 0, 1)
-        row.Name:SetText(d.name .. (entry.avoided and " |cff888888avoid|r" or ""))
+        local name = d.name .. (entry.avoided and " |cff888888avoid|r" or "")
+        if byGear then
+            local gear = entry.gear
+            if gear and gear.scanned then
+                name = name .. string.format("  %s%d|r", Hex(gear.upgrades > 0 and (gear.trackUpgrades > 0 and TRACK or ILVL) or NONE), gear.upgrades)
+            else
+                name = name .. "  |cff444444...|r"
+            end
+        end
+        row.Name:SetText(name)
         local expanded = self.uiExpandedRatingMapID == entry.mapID
         row.Arrow:SetRotation(expanded and 0 or math.rad(90))
         row.Best:SetText(info.ready and BestText(e) or "|cff888888...|r")
@@ -2534,6 +2652,14 @@ function ns:PrintStatus()
     local raids, bosses = self:GetRaids(), 0
     for _, raid in ipairs(raids) do bosses = bosses + #raid.bosses end
     print("  Raids:", #raids, "with", bosses, "boss(es); Raid tab difficulty", self:GetRaidDifficulty())
+    local set = self.loot and self.loot.classSet
+    if set then
+        local n = 0
+        for _ in pairs(set.pieces or {}) do n = n + 1 end
+        print(string.format("  Class set: %s (%s), %d pieces; tier tokens are judged as its pieces", tostring(set.name), tostring(set.setID), n))
+    else
+        print("  Class set: none read from the journal; tier tokens are judged by slot only")
+    end
     for _, d in ipairs(self.dungeons) do
         local items = self:GetDungeonLoot(d.challengeMapID)
         local entry = self.loot and self.loot.dungeons and self.loot.dungeons[d.challengeMapID]

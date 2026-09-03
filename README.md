@@ -50,9 +50,21 @@ the same lines at that key's own level.
   Keystone difficulty and every raid boss at each raid difficulty, filtered
   for your spec exactly like the journal does. No drop table to maintain;
   rescans when the cache is a week old or the pool changes.
+- **Raid boss levels**: later bosses drop higher within the difficulty's
+  track. The steps per boss are shipped with the season data (Season.lua)
+  and matched by boss name, then by journal position; a raid the table
+  does not know falls back to the levels read from the journal at scan
+  time.
 - **Raids**: the season's raids and their bosses come from the journal's
-  current-season tier; a boss's item level at a difficulty is read from its
-  journal link, so later bosses that drop higher are judged higher.
+  current-season tier. Tier tokens are judged as the set piece they turn
+  into for your class (the piece comes from the journal's Class Sets tab;
+  which token makes which slot is shipped with the season data, since the
+  journal names no slot for them). A token row shows the token itself and
+  opens on a click to the piece it makes; a setting shows the piece in the
+  token's place instead. The final boss's token, traded for any slot,
+  stands as the best of the five pieces and always lists all five; it is
+  not in the bonus roll pool, so it gets no Voidcore star or roll verdict
+  (slot tokens can be rolled, and are judged like any drop).
 - **Rating**: your best run per dungeon (level, time, timed or not) and the
   overall rating come from the game's own season data; the IO tab's plans
   are recomputed only when they change.
@@ -110,6 +122,10 @@ the same lines at that key's own level.
 - **Runs** (IO tab): the plans that reach the target, one tab per number of
   runs. The first is the fastest (fewest runs, higher keys), the last the
   easiest (most runs, lowest keys); the easiest is selected by default.
+- **Order** (IO tab): the dropdown above the list orders the planned runs
+  by rating gained (highest key first) or by gear drops (the dungeons with
+  the most usable drops at the planned key first, the count next to the
+  name).
 - **Max key** (IO tab): plans use no key above it. Automatic (grey) is your
   highest timed key plus two; step it to set your own, right-click the box
   to go back to automatic.

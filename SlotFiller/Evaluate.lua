@@ -53,19 +53,33 @@ function ns:SetRaidDifficulty(key)
     self:Fire("SETTINGS_CHANGED")
 end
 
--- The direct drop is the difficulty's track; the boss's journal links carry
--- its own level within it (later bosses drop higher), the track's first
--- step stands in when they do not. The Voidcore roll (and the vault) is one
--- track up at its first step; on Mythic it is the fully upgraded item, or
--- the drop itself where that is already past the top of the track.
-function ns:GetRaidContext(diffKey, boss)
+-- The direct drop is the difficulty's track; later bosses drop higher within
+-- it. The level comes from the season table shipped with the addon, else
+-- the boss's journal loot: the level remembered at scan time, else the
+-- link's (right only while the journal holds the loot), else the track's
+-- first step. The Voidcore roll (and the vault) is one track up at its
+-- first step; on Mythic it is the fully upgraded item, or the drop itself
+-- where that is already past the top of the track.
+function ns:GetRaidContext(diffKey, boss, raid)
     local def = self.RAID_DIFF_BY_KEY[diffKey] or self.RAID_DIFF_BY_KEY.heroic
     local track = self.trackByKey[def.track]
     local ilvl, source
-    local items = boss and self:GetBossLoot(boss, def.key)
+    if track and boss and not raid then
+        for _, r in ipairs(self:GetRaids()) do
+            for _, b in ipairs(r.bosses) do
+                if b == boss then raid = r end
+            end
+        end
+    end
+    if track and boss and raid then
+        ilvl = self:ShippedBossLevel(raid, boss, def.key, track)
+        if ilvl then source = "season" end
+    end
+    local items = not ilvl and boss and self:GetBossLoot(boss, def.key)
     if track and items then
         for _, item in ipairs(items) do
-            local l = self.ItemLevelOf(item.link)
+            local l = item.ilvl or self.ItemLevelOf(item.link)
+            if not l then self:NeedItemData(item.itemID) end
             if l and l >= track.min and (l <= track.max or def.track == "Myth") and (not ilvl or l > ilvl) then ilvl = l end
         end
         if ilvl then source = "journal" end
@@ -231,7 +245,8 @@ function ns:EvaluateItem(item, ctx)
 
     local drop = Classify(g, dropLevel.ilvl, dropLevel.potential, itemState, slotState)
     eval.class, eval.reason, eval.gain, eval.potentialGain = drop.class, drop.reason, drop.gain, drop.potentialGain
-    if vcLevel and vcLevel.ilvl then
+    -- no roll verdict for what a bonus roll cannot award (the omni token)
+    if vcLevel and vcLevel.ilvl and not item.noRoll then
         eval.voidcore = Classify(g, vcLevel.ilvl, vcLevel.potential, itemState, slotState)
     end
     -- Weighted values (Pawn scale): the drop at its (matched) level vs the equipped item.
@@ -288,6 +303,49 @@ end
 -------------------------------------------------------------------------------
 -- Full evaluation
 -------------------------------------------------------------------------------
+-- A set piece read from the journal's Class Sets tab carries no name or
+-- link until the client holds the item; fill them in once it does.
+function ns:FillItemInfo(item)
+    if not item or item.name or not item.itemID or not (C_Item and C_Item.GetItemInfo) then return end
+    local ok, name, link = pcall(C_Item.GetItemInfo, item.itemID)
+    if ok and name then
+        item.name = name
+        if link then item.link = link end
+    end
+end
+
+-- Best first: class, then fully upgraded gain, then immediate gain.
+local function BetterEval(a, b)
+    if a.class ~= b.class then return a.class > b.class end
+    if (a.potentialGain or 0) ~= (b.potentialGain or 0) then return (a.potentialGain or 0) > (b.potentialGain or 0) end
+    return (a.gain or 0) > (b.gain or 0)
+end
+
+-- One loot entry: an item, or a tier token judged as the set piece(s) it
+-- becomes: each piece is judged for its slot (eval.token names the token)
+-- and the token stands as the best of them, with the pieces under it
+-- (eval.pieces: one for a slot token, five for one traded for any slot).
+local function EvaluateEntry(self, item, ctx)
+    local pieces = item.pieces or (item.piece and { item.piece })
+    if not pieces or #pieces == 0 then return self:EvaluateItem(item, ctx) end
+    local evals = {}
+    for _, piece in ipairs(pieces) do
+        self:FillItemInfo(piece)
+        self:NeedItemData(piece.itemID)
+        local eval = self:EvaluateItem(piece, ctx)
+        eval.token = item
+        evals[#evals + 1] = eval
+    end
+    local best = evals[1]
+    for i = 2, #evals do
+        if BetterEval(evals[i], best) then best = evals[i] end
+    end
+    local top = {}
+    for k, v in pairs(best) do top[k] = v end
+    top.pieces, top.token = evals, item
+    return top
+end
+
 -- One loot table (a dungeon's or a boss's) against one drop context. The
 -- caller adds where it came from: sourceName / sourceKey and dungeon or
 -- raid + boss.
@@ -310,13 +368,15 @@ local function EvaluateLoot(self, loot, ctx)
     if loot then
         for _, item in ipairs(loot) do
             r.total = r.total + 1
-            local eval = self:EvaluateItem(item, ctx)
+            self:NeedItemData(item.itemID)
+            local eval = EvaluateEntry(self, item, ctx)
+            local itemID = eval.item.itemID
             table.insert(r.items, eval)
-            if self:GetItemState(item.itemID) == "want" then
+            if self:GetItemState(itemID) == "want" then
                 r.wanted = r.wanted + 1
                 table.insert(r.wantedItems, eval)
             end
-            if self:IsVoidcoreTarget(item.itemID) then
+            if self:IsVoidcoreTarget(itemID) and not eval.item.noRoll then
                 r.voidcore = r.voidcore + 1
                 table.insert(r.voidcoreItems, eval)
             end
@@ -346,7 +406,7 @@ function ns:EvaluateDungeon(d, ctx)
 end
 
 function ns:EvaluateBoss(raid, boss, diffKey)
-    local ctx = self:GetRaidContext(diffKey, boss)
+    local ctx = self:GetRaidContext(diffKey, boss, raid)
     ctx.difficultyName = self:RaidDifficultyName(raid, diffKey)
     local r = EvaluateLoot(self, self:GetBossLoot(boss, diffKey), ctx)
     r.raid, r.boss = raid, boss
@@ -364,7 +424,27 @@ function ns:EvaluateDungeonAt(d, keyLevel)
     return r
 end
 
+-- One dungeon at a key other than the selected one: the IO tab's planned
+-- keys. Judged at the highest key that still raises the drop (gear stops
+-- improving past it), cached until the next evaluation. In combat, or before
+-- the gear has been scanned, the selected key's result stands in.
+local dropsAtKey = {}
+function ns:DropsAtKey(d, keyLevel)
+    if not d or not self.db then return nil end
+    local maxKey = self:MaxUsefulKey() or 10
+    keyLevel = math.max(2, math.min(maxKey, math.floor(tonumber(keyLevel) or maxKey)))
+    if keyLevel == (self.db.targetKey or 10) then return self:ResultForDungeon(d) end
+    local key = d.challengeMapID .. ":" .. keyLevel
+    local r = dropsAtKey[key]
+    if r then return r end
+    if InCombatLockdown() or not self.gearScanned then return self:ResultForDungeon(d) end
+    r = self:EvaluateDungeonAt(d, keyLevel)
+    dropsAtKey[key] = r
+    return r
+end
+
 function ns:Evaluate()
+    wipe(dropsAtKey)
     local ctx = self:GetDropContext()
     local results = {}
     for _, d in ipairs(self.dungeons) do
@@ -438,7 +518,8 @@ function ns:SlotSummary()
         summary[s.id] = { best = NONE, sources = {}, count = 0, wanted = {}, voidcore = {} }
     end
     for _, r in ipairs(self:GearResults()) do
-        for _, eval in ipairs(r.items) do
+        for _, top in ipairs(r.items) do
+        for _, eval in ipairs(top.pieces or { top }) do
             if eval.slotID then
                 local e = summary[eval.slotID]
                 if self:GetItemState(eval.item.itemID) == "want" then
@@ -460,6 +541,7 @@ function ns:SlotSummary()
                     end
                 end
             end
+        end
         end
     end
     return summary
@@ -486,6 +568,29 @@ ns:RegisterEvent("PLAYER_REGEN_ENABLED", function()
         ns.evaluatePending = nil
         Reevaluate()
     end
+end)
+
+-------------------------------------------------------------------------------
+-- Item data: a link answers nothing (no item level, no stats) until the
+-- client holds the item, and after a login the cached loot is judged before
+-- it does. Each missing item is asked for once; when the answers arrive the
+-- pass runs again. An item that fails to load is not asked again.
+-------------------------------------------------------------------------------
+local itemRequests = {}     -- itemID -> true while asked and unanswered, false after
+ns.itemRequests = itemRequests
+
+function ns:NeedItemData(itemID)
+    if not itemID or itemRequests[itemID] ~= nil then return end
+    if not (C_Item and C_Item.IsItemDataCachedByID and C_Item.RequestLoadItemDataByID) then return end
+    if C_Item.IsItemDataCachedByID(itemID) then return end
+    itemRequests[itemID] = true
+    C_Item.RequestLoadItemDataByID(itemID)
+end
+
+ns:RegisterEvent("ITEM_DATA_LOAD_RESULT", function(itemID, success)
+    if itemRequests[itemID] ~= true then return end
+    itemRequests[itemID] = false
+    if success then ns:Schedule("itemData", 0.5, Reevaluate) end
 end)
 
 ns:On("GEAR_UPDATED", Reevaluate)

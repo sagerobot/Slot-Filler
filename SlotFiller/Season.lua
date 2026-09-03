@@ -27,6 +27,37 @@ ns.SEASON_DATA_LATEST = {
     -- keyLevel -> Great Vault item level; Nebulous Voidcore rolls use this level
     vaultByKey = { [2] = 305, [3] = 305, [4] = 308, [5] = 308, [6] = 311, [7] = 315, [8] = 315, [9] = 315, [10] = 318 },
     maxKeyForRewards = 10,
+    -- Raid boss drops: the step within the difficulty's track (Raid Finder
+    -- Veteran, Normal Champion, Heroic Hero, Mythic Myth) per group of
+    -- bosses, plus item levels that leave the track. A boss is matched by
+    -- name, else by its position in the journal. Raids are keyed by name
+    -- without a leading "The". Sources: method.gg, warcraft.wiki.gg
+    -- "Venomous Abyss", expcarry (2026-09-02); the lair from wowhead.
+    raidBosses = {
+        ["venomous abyss"] = {
+            { step = 1, positions = { 1 }, names = { "nekzali the soulcoiler" } },
+            { step = 2, positions = { 2, 3 }, names = { "entombed sentinels", "the lost explorers" } },
+            { step = 3, positions = { 4, 5, 6 }, names = { "vashnik the malignant", "sszorak", "the twin fangs" } },
+            { step = 4, positions = { 7, 8 }, names = { "the coiled altar", "ulatek" }, ilvl = { mythic = 344 } },
+        },
+        ["tidebound grotto"] = {
+            { step = 1, positions = { 1 }, names = { "nymrissa wavecaller" } },
+        },
+    },
+    -- Tier tokens: not equippable, and the journal names no slot for them,
+    -- so the slot each one turns into is shipped. Four armour groups
+    -- (Venomwoven cloth, Venomcured leather, Venomcast mail, Venomforged
+    -- plate) x five slots, and Ula'tek's Slumbering Coil Curio, traded for
+    -- the set piece of any slot. Sources: expcarry tier token list, wowhead
+    -- and warcraft.wiki.gg item pages (2026-09-02).
+    tierTokens = {
+        [270909] = "TIER_ANY",                                                                                                      -- Slumbering Coil Curio, Ula'tek
+        [270910] = "INVTYPE_HAND", [270911] = "INVTYPE_HAND", [270912] = "INVTYPE_HAND", [270913] = "INVTYPE_HAND",             -- Idol, Entombed Sentinels
+        [270922] = "INVTYPE_SHOULDER", [270923] = "INVTYPE_SHOULDER", [270924] = "INVTYPE_SHOULDER", [270925] = "INVTYPE_SHOULDER", -- Remnant, The Lost Explorers
+        [270926] = "INVTYPE_CHEST", [270927] = "INVTYPE_CHEST", [270928] = "INVTYPE_CHEST", [270929] = "INVTYPE_CHEST",         -- Icon, Vashnik
+        [270918] = "INVTYPE_LEGS", [270919] = "INVTYPE_LEGS", [270920] = "INVTYPE_LEGS", [270921] = "INVTYPE_LEGS",             -- Relic, Sszorak
+        [270914] = "INVTYPE_HEAD", [270915] = "INVTYPE_HEAD", [270916] = "INVTYPE_HEAD", [270917] = "INVTYPE_HEAD",             -- Effigy, The Twin Fangs
+    },
     -- Mythic+ rating for a timed run: base at +2, per level, an extra bonus at
     -- each affix breakpoint, and up to timerBonus for finishing timerWindow
     -- (40%) under the timer. Sources: Mr. Mythical / misti calculators (2026-09).
@@ -51,6 +82,46 @@ end
 function ns:GetSeasonData()
     local id = self:GetSeasonID()
     return (id and self.SEASON_DATA[id]) or self.SEASON_DATA_LATEST
+end
+
+-------------------------------------------------------------------------------
+-- Raid boss drop levels shipped with the season
+-------------------------------------------------------------------------------
+local function RaidKey(name)
+    local s = ns:NormalizeName(name)
+    return s and (s:gsub("^the ", ""))
+end
+
+-- The shipped drop level of `boss` in `raid` at diffKey on `track`, or nil
+-- when the season table does not know the raid or the boss.
+function ns:ShippedBossLevel(raid, boss, diffKey, track)
+    local data = self:GetSeasonData()
+    local bands = data and data.raidBosses and raid and raid.name and data.raidBosses[RaidKey(raid.name)]
+    if not bands or not boss or not track then return nil end
+    local bname = self:NormalizeName(boss.name)
+    local band
+    for _, b in ipairs(bands) do
+        for _, n in ipairs(b.names or {}) do
+            if n == bname then band = b end
+        end
+    end
+    if not band and boss.index then
+        for _, b in ipairs(bands) do
+            for _, i in ipairs(b.positions or {}) do
+                if i == boss.index then band = b end
+            end
+        end
+    end
+    if not band then return nil end
+    local special = band.ilvl and band.ilvl[diffKey]
+    if special then return special end
+    return band.step and track.ilvls and track.ilvls[band.step] or nil
+end
+
+-- The inventory type a shipped tier token turns into, or nil.
+function ns:ShippedTokenSlot(itemID)
+    local data = self:GetSeasonData()
+    return data and data.tierTokens and itemID and data.tierTokens[itemID] or nil
 end
 
 -------------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 -- spec in the character's saved variables.
 local _, ns = ...
 
-local CACHE_VERSION = 7
+local CACHE_VERSION = 10
 local CACHE_MAX_AGE = 7 * 24 * 3600
 
 local DIFF_KEYSTONE = (DifficultyUtil and DifficultyUtil.ID and DifficultyUtil.ID.DungeonChallenge) or 8
@@ -152,6 +152,100 @@ local function EquipInfo(itemID)
     return equipLoc, icon, classID, subClassID
 end
 
+-- The class's current tier set from the journal's Class Sets tab: the set
+-- with the highest base item level, its pieces by inventory type. Tier
+-- tokens are judged as the piece they turn into.
+local function ReadClassSet(classID, specID)
+    if not (C_LootJournal and C_LootJournal.GetItemSetItems) then return nil end
+    local sets
+    local savedClass, savedSpec
+    if C_LootJournal.GetClassAndSpecFilters then
+        local ok, c, s = pcall(C_LootJournal.GetClassAndSpecFilters)
+        if ok then savedClass, savedSpec = c, s end
+    end
+    if C_LootJournal.SetClassAndSpecFilters and C_LootJournal.GetFilteredItemSets then
+        pcall(C_LootJournal.SetClassAndSpecFilters, classID, specID or 0)
+        local ok, v = pcall(C_LootJournal.GetFilteredItemSets)
+        if ok then sets = v end
+        if savedClass then pcall(C_LootJournal.SetClassAndSpecFilters, savedClass, savedSpec or 0) end
+    end
+    if type(sets) ~= "table" and C_LootJournal.GetItemSets then
+        local ok, v = pcall(C_LootJournal.GetItemSets, classID, specID or 0)
+        if ok then sets = v end
+    end
+    if type(sets) ~= "table" then return nil end
+    local best
+    for _, set in ipairs(sets) do
+        local lvl = tonumber(set.itemLevel) or 0
+        if set.setID and (not best or lvl > best.itemLevel or (lvl == best.itemLevel and set.setID > best.setID)) then
+            best = { setID = set.setID, name = set.name, itemLevel = lvl }
+        end
+    end
+    if not best then return nil end
+    local ok, items = pcall(C_LootJournal.GetItemSetItems, best.setID)
+    if not ok or type(items) ~= "table" then return nil end
+    best.pieces = {}
+    for _, info in ipairs(items) do
+        local id = info.itemID
+        if id then
+            local equipLoc, icon, itemClassID, subClassID = EquipInfo(id)
+            if equipLoc and ns.INVTYPE_SLOTS[equipLoc] then
+                local piece = { itemID = id, link = "item:" .. id, icon = icon, equipLoc = equipLoc,
+                    classID = itemClassID, subClassID = subClassID, piece = true }
+                ns:FillItemInfo(piece)
+                best.pieces[equipLoc] = piece
+            end
+        end
+    end
+    ns:Debug(string.format("Class set: %s (%d), %d pieces", tostring(best.name), best.setID, (function() local n = 0; for _ in pairs(best.pieces) do n = n + 1 end; return n end)()))
+    return best
+end
+
+local function CopyPiece(p)
+    return { itemID = p.itemID, name = p.name, link = p.link, icon = p.icon, equipLoc = p.equipLoc,
+        classID = p.classID, subClassID = p.subClassID, piece = true }
+end
+
+local function SetPiece(set, inv)
+    return set.pieces[inv] or (inv == "INVTYPE_CHEST" and set.pieces.INVTYPE_ROBE) or nil
+end
+
+local TIER_ORDER = { "INVTYPE_HEAD", "INVTYPE_SHOULDER", "INVTYPE_CHEST", "INVTYPE_HAND", "INVTYPE_LEGS" }
+
+-- A tier token gets the set piece it becomes; one traded for any slot
+-- gets all five. That one (the omni token) is unique and outside the
+-- bonus roll pool, so it and its pieces carry noRoll; slot tokens roll.
+local function AttachPieces(it, set)
+    if it.token and it.equipLoc == "TIER_ANY" then it.noRoll = true end
+    if not it.token or not set or not set.pieces then return end
+    if it.equipLoc == "TIER_ANY" then
+        local pieces = {}
+        for _, inv in ipairs(TIER_ORDER) do
+            local p = SetPiece(set, inv)
+            if p then
+                local copy = CopyPiece(p)
+                copy.noRoll = true
+                pieces[#pieces + 1] = copy
+            end
+        end
+        if #pieces > 0 then it.pieces = pieces end
+    else
+        local p = SetPiece(set, it.equipLoc)
+        if p then it.piece = CopyPiece(p) end
+    end
+end
+
+-- The inventory type a tier token stands for, from the slot the journal
+-- names for it ("Head"); nil when the text is not a slot name.
+local function TokenEquipLoc(slotText)
+    local want = ns:NormalizeName(slotText)
+    if not want or want == "" then return nil end
+    for _, s in ipairs(ns.SLOTS) do
+        if ns:NormalizeName(s.name) == want then return ns.SLOT_INVTYPE[s.key] end
+    end
+    return nil
+end
+
 -- The journal's current loot list (instance or selected encounter).
 local function ReadLootItems()
     local n = EJ_GetNumLoot() or 0
@@ -161,14 +255,27 @@ local function ReadLootItems()
         if info and info.itemID then
             if not info.link or not info.name then incomplete = true end
             local equipLoc, icon, itemClassID, subClassID = EquipInfo(info.itemID)
+            -- a tier token: not equippable itself, listed under the slot it
+            -- becomes: the season table knows this season's, else the slot
+            -- the journal names (it names none for the current ones)
+            local token
+            if not (equipLoc and ns.INVTYPE_SLOTS[equipLoc]) then
+                local inv = ns:ShippedTokenSlot(info.itemID) or (info.slot and TokenEquipLoc(info.slot))
+                if inv then equipLoc, token = inv, true end
+            end
+            -- the link's level is only right while the journal holds this
+            -- loot; remembered here so a later login need not resolve it
+            local ilvl = info.link and ns.ItemLevelOf(info.link)
             table.insert(items, {
                 itemID = info.itemID,
                 encounterID = info.encounterID,
                 name = info.name,
                 link = info.link,
+                ilvl = ilvl and ilvl > 0 and ilvl or nil,
                 icon = info.icon or icon,
                 slotText = info.slot,
                 armorType = info.armorType,
+                token = token,
                 equipLoc = equipLoc,
                 classID = itemClassID,
                 subClassID = subClassID,
@@ -433,7 +540,7 @@ function ns:CacheIsFresh(entry)
     return true
 end
 
-function ns:StoreLoot(results, raids)
+function ns:StoreLoot(results, raids, classSet)
     local season, spec = CacheKey()
     self.cdb.lootCache[season] = self.cdb.lootCache[season] or {}
     self.cdb.lootCache[season][spec] = {
@@ -442,6 +549,7 @@ function ns:StoreLoot(results, raids)
         classID = self.playerClassID,
         dungeons = results,
         raids = raids or {},
+        classSet = classSet,
     }
     return self.cdb.lootCache[season][spec]
 end
@@ -509,7 +617,7 @@ local function FinishScan(aborted)
         ns:Fire("SCAN_PROGRESS", nil)
         return
     end
-    ns.loot = ns:StoreLoot(s.results, s.raids)
+    ns.loot = ns:StoreLoot(s.results, s.raids, s.classSet)
     ns.scanning = false
     ns:Debug("Loot scan complete:", s.scannedCount, "dungeons")
     ns:Fire("SCAN_PROGRESS", nil)
@@ -562,9 +670,14 @@ function ScanStep()
     if entry.boss then
         ns:Fire("SCAN_PROGRESS", scan.index, #scan.queue, entry.boss.name .. " (" .. entry.diff.name .. ")")
         local items, incomplete, n = ReadEncounterLoot(entry.raid, entry.boss, entry.diffID, scan.classID, scan.specID)
+        local equippable = Equippable(items)
+        for _, it in ipairs(equippable) do
+            if not it.ilvl then incomplete = true; break end
+            AttachPieces(it, scan.classSet)
+        end
         if (incomplete or n == 0) and scan.retries < MAX_RETRIES then return Retry() end
         scan.waitingForData = false
-        entry.boss.loot[entry.diff.key] = { items = Equippable(items), difficulty = entry.diffID, raw = n, incomplete = incomplete or nil }
+        entry.boss.loot[entry.diff.key] = { items = equippable, difficulty = entry.diffID, raw = n, incomplete = incomplete or nil }
         return NextStep()
     end
     local d = entry.dungeon
@@ -609,6 +722,7 @@ function ns:StartLootScan(reason)
         specID = specID,
         journalState = SaveJournalState(),
     }
+    scan.classSet = ReadClassSet(scan.classID, specID)
     for _, d in ipairs(self.dungeons) do table.insert(scan.queue, { dungeon = d }) end
     -- raid bosses after the dungeons: selecting an encounter narrows the
     -- journal's loot list, and dungeons are read with none selected
