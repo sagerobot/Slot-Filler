@@ -11,7 +11,9 @@ It docks a window to the left of the Dungeons & Raids window with five tabs:
 - **Raid** does the same for every boss of the season's raids (the lair
   included) at the difficulty you pick on the tab, with the same Drops and
   Wanted columns.
-- **Gear** is one row per slot with what you wear. Open a slot and every
+- **Gear** is one row per slot with what you wear; rings and trinkets are
+  one row per pair, since a drop is judged against the weaker of the two.
+  Open a slot and every
   drop for it, from dungeons, raid bosses or both, is listed, best stat fit
   first, each with where it comes from and a star. That is where you compare
   same-slot drops and pick the one to want.
@@ -23,8 +25,10 @@ It docks a window to the left of the Dungeons & Raids window with five tabs:
   (with the Adventure Guide or a roll prompt open) and corrects the record.
   The tab shows how much of each pool would be an upgrade, weighs Voidcore
   targets and wanted items highest, and opens a row into the pool with each
-  roll's verdict. Sources are ranked by the item levels a roll gains on
-  average, slot-weighted. The roll window itself gets a line with the
+  roll's verdict. The Ideal column counts rolls whose stats fit too (a 75%
+  match, better than the piece replaced, or a weighted gain with a
+  profile) over usable ones. Sources are ranked by the item levels a roll
+  gains on average, slot-weighted, with fitting stats counting extra. The roll window itself gets a line with the
   same odds. Set pieces worn, the next set bonus and Catalyst charges show
   on the Gear and Voidcore tabs; a tier-slot drop's tooltip says the
   Catalyst can make it a set piece.
@@ -128,7 +132,13 @@ lines at that key's own level, plus the rating a timed run would add.
   *Want* counts every drop for that slot; *Skip* ignores it (e.g. a crafted
   piece).
 - **Items**: right-click a drop to exclude it (a bad trinket, or something you
-  already received from a Voidcore, since those leave the roll pool).
+  already received from a Voidcore, since those leave the roll pool). A drop
+  you already own, equipped or in a bag or bank, shows as "owned" and never
+  counts, unless the drop would upgrade further than your copy can; a drop
+  you have already put through the Catalyst (the set piece with its exact
+  stats, worn or held) shows as "catalyzed" the same way; with
+  Syndicator (Baganator) installed, the bank and warband bank count even
+  before you visit them, at the level of the copy stored there.
 - **Sorting**: click a column header (Dungeon or Boss, Drops, Wanted).
 - **Settings**: the cog in the title bar; click it again to come back.
 - **Voidcore tab**: pools follow your loot spec; dungeons at the selected
@@ -154,6 +164,21 @@ lines at that key's own level, plus the rating a timed run would add.
   Auto follows the weight profile in use, or your gear without one. Pasting
   a Pawn string switches to Auto; the manual order is kept for when you
   switch back.
+- **Weight profiles**: a profile remembers the gear you wore when it was
+  imported; once you wear something else the toolbar says "(gear changed)"
+  and the tooltip lists the slots, a reminder to re-sim and paste again.
+  A profile follows the equipment set of the same name (Ask Mr. Robot's
+  sets are named after its setups, its scales end in the setup name), so
+  wearing that set switches to it.
+- **Ask Mr. Robot**: with its addon loaded, a box under its window takes
+  the Pawn string the optimizer shows next to the import code. The import
+  code carries every setup's label and gear, so a profile named after a
+  setup is tied to it: its "made for" gear is the setup's gear, wearing
+  that set switches to it, and the box lists setups still without
+  weights.
+- **Weight profiles**: newer weights for the same Pawn scale or the same
+  Ask Mr. Robot setup replace the old profile in place, so re-simming
+  never leaves stale weights behind.
 - **Weight profiles**: paste a Pawn scale string (from Pawn, Raidbots or a
   guide) into Settings, or `/sf pawn <string>`. Each import is saved as a
   named profile for the spec, so a healer can keep a Raid and a Mythic+
@@ -261,6 +286,7 @@ lua tests/harness.lua
 | `Evaluate.lua` | Upgrade classification (drop, and the Voidcore roll for tooltips), dungeon and boss ranking |
 | `Voidcore.lua` | Bonus roll pools from the Voidcache tooltips, source ranking, the roll window line |
 | `UI.lua` | Main window (Dungeons, Raid, Gear, IO and Voidcore tabs), docking (neighbour-aware) and Group Finder push |
+| `AMR.lua` | Pawn string box under Ask Mr. Robot's window |
 | `Options.lua` | Settings tab and the Settings > AddOns entry |
 | `LFGHook.lua` | Premade Groups badges and tooltip lines |
 

@@ -86,6 +86,8 @@ ns.UpgradeInfoOf = UpgradeInfoOf
 -------------------------------------------------------------------------------
 ns.gear = {}
 
+local FillFromLink
+
 local function ScanSlot(slotID)
     local link = GetInventoryItemLink("player", slotID)
     local entry = { slotID = slotID }
@@ -95,6 +97,16 @@ local function ScanSlot(slotID)
         entry.potential = 0
         return entry
     end
+    FillFromLink(entry, link, function()
+        local data = C_TooltipInfo and C_TooltipInfo.GetInventoryItem and C_TooltipInfo.GetInventoryItem("player", slotID)
+        return ParseUpgradeFromTooltip(data)
+    end)
+    return entry
+end
+
+-- An entry's item, level and track from its link. `tooltipFallback`
+-- (optional) reads the upgrade line when the direct API has none.
+function FillFromLink(entry, link, tooltipFallback)
     entry.link = link
     entry.itemID = C_Item.GetItemInfoInstant(link)
     entry.ilvl = ItemLevelOf(link) or 0
@@ -102,13 +114,9 @@ local function ScanSlot(slotID)
     entry.equipLoc = equipLoc
     entry.classID = classID
     entry.subClassID = subClassID
-
     -- Upgrade track: direct API first, tooltip line as fallback.
     local name, cur, max, maxIlvl = UpgradeInfoOf(link)
-    if not cur then
-        local data = C_TooltipInfo and C_TooltipInfo.GetInventoryItem and C_TooltipInfo.GetInventoryItem("player", slotID)
-        name, cur, max = ParseUpgradeFromTooltip(data)
-    end
+    if not cur and tooltipFallback then name, cur, max = tooltipFallback() end
     entry.trackName, entry.cur, entry.max = name, cur, max
     if cur and max then
         local track = ns:ResolveTrack(name, cur, max, entry.ilvl)
@@ -311,14 +319,13 @@ function ns:GetSlotState(slotID)
     return (self.cdb and self.cdb.slotState[slotID]) or "auto"
 end
 
-function ns:CycleSlotState(slotID)
+-- `withID`: a paired slot (the other ring or trinket) set to the same state.
+function ns:CycleSlotState(slotID, withID)
     local cur = self:GetSlotState(slotID)
     local nextState = (cur == "auto" and "want") or (cur == "want" and "skip") or "auto"
-    if nextState == "auto" then
-        self.cdb.slotState[slotID] = nil
-    else
-        self.cdb.slotState[slotID] = nextState
-    end
+    local value = nextState ~= "auto" and nextState or nil
+    self.cdb.slotState[slotID] = value
+    if withID then self.cdb.slotState[withID] = value end
     self:Fire("SETTINGS_CHANGED")
 end
 
@@ -418,18 +425,117 @@ function ns:ClearItemStates()
 end
 
 -------------------------------------------------------------------------------
--- Obtained: a wanted item that turns up equipped or in the bags leaves the
--- wanted list on its own, so the window never keeps pointing at it.
+-- Owned: equipped, in the bags, the bank (once visited this session), the
+-- reagent bank or the warband bank, from the client; and, when Syndicator
+-- (Baganator's tracking) is loaded, what it remembers of this character's
+-- bank and the warband bank between sessions. A drop you already have is
+-- no upgrade and a wanted one leaves the list on its own.
 -------------------------------------------------------------------------------
-function ns:OwnsItem(itemID)
+-- The copies you hold, by item: links from the equipped gear, the bag and
+-- bank containers the client can read, and Syndicator's record of this
+-- character and the warband bank. Built once per evaluation pass; a
+-- copy's level and track are worked out only when an item is asked about.
+local ownedLinks = nil      -- itemID -> { { link, where }, ... }
+local ownedBest = {}        -- itemID -> entry | false
+
+function ns:ClearOwnedCache()
+    ownedLinks = nil
+    wipe(ownedBest)
+end
+
+local function AddLink(index, link, where)
+    if type(link) ~= "string" or ns.issecret(link) then return end
+    local itemID = tonumber(link:match("|Hitem:(%d+)"))
+    if not itemID then return end
+    index[itemID] = index[itemID] or {}
+    table.insert(index[itemID], { link = link, where = where })
+end
+
+-- Syndicator keeps slots as { itemID, itemLink, ... } in nested tables.
+local function Walk(t, index, where, depth)
+    if type(t) ~= "table" or depth > 5 then return end
+    if type(t.itemLink) == "string" then
+        AddLink(index, t.itemLink, where)
+        return
+    end
+    for _, v in pairs(t) do
+        if type(v) == "table" then Walk(v, index, where, depth + 1) end
+    end
+end
+
+local function BuildOwnedLinks(self)
+    local index = {}
     for _, g in pairs(self.gear or {}) do
-        if g.itemID == itemID then return true end
+        if g.link then AddLink(index, g.link, "equipped") end
     end
-    if C_Item and C_Item.GetItemCount then
-        local ok, n = pcall(C_Item.GetItemCount, itemID, true)
-        if ok and type(n) == "number" and not self.issecret(n) and n > 0 then return true end
+    if C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemLink then
+        local containers = {}
+        for bag = 0, 5 do containers[#containers + 1] = { bag, "bags" } end
+        local bankIDs = { -1, -3, 6, 7, 8, 9, 10, 11, 12 }
+        if Enum and Enum.BagIndex then
+            for _, key in ipairs({ "AccountBankTab_1", "AccountBankTab_2", "AccountBankTab_3", "AccountBankTab_4", "AccountBankTab_5" }) do
+                if Enum.BagIndex[key] then bankIDs[#bankIDs + 1] = Enum.BagIndex[key] end
+            end
+        end
+        for _, bag in ipairs(bankIDs) do containers[#containers + 1] = { bag, "bank" } end
+        for _, c in ipairs(containers) do
+            local ok, n = pcall(C_Container.GetContainerNumSlots, c[1])
+            for slot = 1, (ok and tonumber(n)) or 0 do
+                local ok2, link = pcall(C_Container.GetContainerItemLink, c[1], slot)
+                if ok2 then AddLink(index, link, c[2]) end
+            end
+        end
     end
-    return false
+    local api = Syndicator and Syndicator.API
+    if api and api.GetCharacter and api.GetCurrentCharacter and (not api.IsReady or api.IsReady()) then
+        local ok, data = pcall(api.GetCharacter, api.GetCurrentCharacter())
+        if ok and type(data) == "table" then
+            Walk(data.bags, index, "bags", 0)
+            Walk(data.bank, index, "bank", 0)
+            Walk(data.equipped, index, "equipped", 0)
+            Walk(data.void, index, "void storage", 0)
+        end
+        if api.GetWarband then
+            local ok2, wb = pcall(api.GetWarband, 1)
+            if ok2 and type(wb) == "table" then Walk(wb.bank, index, "warband bank", 0) end
+        end
+    end
+    return index
+end
+
+-- The best copy of an item you hold (highest fully upgraded level), as an
+-- entry like the equipped gear's, or nil. A copy the client counts but
+-- shows no link for (a bank not visited) is owned at an unknown level.
+function ns:OwnedCopy(itemID)
+    if not itemID then return nil end
+    local cached = ownedBest[itemID]
+    if cached ~= nil then return cached or nil end
+    ownedLinks = ownedLinks or BuildOwnedLinks(self)
+    local best
+    for _, copy in ipairs(ownedLinks[itemID] or {}) do
+        local entry = { where = copy.where }
+        FillFromLink(entry, copy.link)
+        if not best or (entry.potential or 0) > (best.potential or 0) then best = entry end
+    end
+    if not best then
+        local counted = false
+        if C_Item and C_Item.IsEquippedItem then
+            local ok, on = pcall(C_Item.IsEquippedItem, itemID)
+            if ok and on == true then counted = true end
+        end
+        if not counted and C_Item and C_Item.GetItemCount then
+            local ok, n = pcall(C_Item.GetItemCount, itemID, true, false, true, true)
+            if not ok then ok, n = pcall(C_Item.GetItemCount, itemID, true) end
+            if ok and type(n) == "number" and not self.issecret(n) and n > 0 then counted = true end
+        end
+        if counted then best = { itemID = itemID, where = "bags or bank", unknownLevel = true, ilvl = 0, potential = math.huge } end
+    end
+    ownedBest[itemID] = best or false
+    return best
+end
+
+function ns:OwnsItem(itemID)
+    return self:OwnedCopy(itemID) ~= nil
 end
 
 -- Loot table entry for an item ID (any dungeon or boss), or nil.
@@ -455,6 +561,7 @@ end
 
 -- A wanted item or Voidcore target that turned up leaves its list.
 function ns:CheckObtained()
+    self:ClearOwnedCache()
     local states = StatesFor(self)
     if not states then return end
     local targets = VoidcoreFor(self) or {}
@@ -520,11 +627,15 @@ end
 -------------------------------------------------------------------------------
 ns:On("LOGIN", function()
     ns:RegisterEvent("PLAYER_EQUIPMENT_CHANGED", function()
+        ns:ClearOwnedCache()
         ns:Schedule("gear", 0.5, function() ns:ScanGear() end)
         ns:Schedule("obtained", 1, function() ns:CheckObtained() end)
     end)
     ns:RegisterEvent("BAG_UPDATE_DELAYED", function()
+        ns:ClearOwnedCache()
         ns:Schedule("obtained", 1, function() ns:CheckObtained() end)
+        -- a drop that just arrived is owned now
+        ns:Schedule("bags", 1.5, function() ns:Fire("BAGS_UPDATED") end)
     end)
     -- upgrading at the NPC raises a slot's free upgrade level
     ns:RegisterEvent("ITEM_UPGRADE_MASTER_UPDATE", function()

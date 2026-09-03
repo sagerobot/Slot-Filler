@@ -85,6 +85,10 @@ function ns:ItemStats(link)
     return any and stats or nil
 end
 
+function ns:ClearStatCache()
+    wipe(statCache)
+end
+
 local function HasSecondaries(stats)
     if not stats then return false end
     for _, s in ipairs(ns.STATS) do if stats[s.key] then return true end end
@@ -128,6 +132,23 @@ function ns:ParsePawnString(text)
     end
     if not any then return nil, "no stat weights found" end
     return scale
+end
+
+-- Two stat sets with the same secondaries in the same proportions: a
+-- Catalyst keeps an item's stats exactly, only the level may differ.
+function ns:StatsAlike(a, b)
+    if not HasSecondaries(a) or not HasSecondaries(b) then return false end
+    local sa, sb = 0, 0
+    for _, s in ipairs(self.STATS) do
+        local va, vb = a[s.key] or 0, b[s.key] or 0
+        if (va > 0) ~= (vb > 0) then return false end
+        sa, sb = sa + va, sb + vb
+    end
+    if sa == 0 or sb == 0 then return false end
+    for _, s in ipairs(self.STATS) do
+        if math.abs((a[s.key] or 0) / sa - (b[s.key] or 0) / sb) > 0.03 then return false end
+    end
+    return true
 end
 
 -- "auto" or manual (nil) for a spec; the caller fires SETTINGS_CHANGED once.
@@ -209,22 +230,59 @@ function ns:FindStatProfile(what)
     return nil
 end
 
--- Saves a parsed scale as a new profile for the evaluated spec, named `name`
--- (default: the Pawn scale's own name), and switches to it. Returns index, scale.
+-- The profile new weights replace: the same Pawn scale (by its own name),
+-- the same Ask Mr. Robot setup, or the name given. nil for a new one.
+local function Replaces(self, list, scale, name)
+    local pawn = type(scale.pawnName) == "string" and scale.pawnName:lower() or nil
+    local setup = self.AmrSetupFor and self:AmrSetupFor(scale) or nil
+    local lname = name ~= "" and name:lower() or nil
+    for i, old in ipairs(list) do
+        if pawn and type(old.pawnName) == "string" and old.pawnName:lower() == pawn then return i, old end
+        if setup and old.amrSetup and old.amrSetup == setup.label then return i, old end
+        if lname and type(old.name) == "string" and old.name:lower() == lname then return i, old end
+    end
+    return nil
+end
+
+-- Saves a parsed scale as a profile for the evaluated spec, named `name`
+-- (default: the Pawn scale's own name), and switches to it. Newer weights
+-- for the same scale or setup replace the old profile in place, keeping
+-- its name unless one is given. Returns index, scale.
 function ns:AddStatProfile(scale, name)
     local list, specID = ProfileList(self)
     if not list or type(scale) ~= "table" or type(scale.weights) ~= "table" then return nil end
     scale.pawnName = scale.pawnName or scale.name
     name = CleanName(name)
-    if name == "" then name = CleanName(scale.pawnName) end
-    if name == "" then name = "Profile " .. (#list + 1) end
-    scale.name = name
-    scale.imported = scale.imported or time()
-    list[#list + 1] = scale
+    local index, old = Replaces(self, list, scale, name)
+    if old then
+        -- the old table stays (others may hold it); its contents are the new
+        local keep = name ~= "" and name or old.name
+        for k in pairs(old) do old[k] = nil end
+        for k, v in pairs(scale) do old[k] = v end
+        old.name = keep
+        old.imported = time()
+        old.gear = self:GearSnapshot()
+        old.setName = self:StatProfileSet(old) or self:EquippedSetName()
+        scale = old
+    else
+        if name == "" then name = CleanName(scale.pawnName) end
+        if name == "" then name = "Profile " .. (#list + 1) end
+        scale.name = name
+        scale.imported = scale.imported or time()
+        -- the gear the weights were made for, to say when it has changed, and
+        -- the equipment set they belong to
+        scale.gear = scale.gear or self:GearSnapshot()
+        scale.setName = scale.setName or self:StatProfileSet(scale) or self:EquippedSetName()
+        list[#list + 1] = scale
+        index = #list
+    end
+    -- an Ask Mr. Robot setup of the same name: its gear is what the
+    -- weights are for
+    if self.LinkProfilesToAmr then self:LinkProfilesToAmr() end
     -- Pasting weights means "use these": the order follows them from now on.
     SetMode(self, specID, "auto")
-    self:SetActiveStatProfile(#list)
-    return #list, scale
+    self:SetActiveStatProfile(index)
+    return index, scale
 end
 
 function ns:RenameStatProfile(index, name)
@@ -271,10 +329,108 @@ end
 function ns:ImportPawnString(text, name)
     local scale, err = self:ParsePawnString(text)
     if not scale then return nil, err end
-    local index = self:AddStatProfile(scale, name)
+    local index, stored = self:AddStatProfile(scale, name)
     if not index then return nil, "no spec to save it for" end
-    return scale, index
+    return stored or scale, index
 end
+
+-- What is worn now, per slot: { [slotID] = { itemID, ilvl, name } }; nil
+-- before the gear has been scanned.
+function ns:GearSnapshot()
+    if not self.gearScanned then return nil end
+    local snap = {}
+    for _, s in ipairs(self.SLOTS) do
+        local g = self.gear[s.id]
+        if g and not g.empty and g.itemID then
+            snap[s.id] = { itemID = g.itemID, ilvl = g.ilvl or 0, name = g.link and g.link:match("%[(.-)%]") or nil }
+        end
+    end
+    return snap
+end
+
+-- Slots worn differently from the gear a profile was made for:
+-- { { slotID, from = snap entry | nil, to = gear entry | nil }, ... }, in
+-- slot order. Empty when they match or the profile remembers no gear.
+function ns:StatProfileGearDiff(scale)
+    local diff = {}
+    local snap = scale and scale.gear
+    if not snap or not self.gearScanned then return diff end
+    for _, s in ipairs(self.SLOTS) do
+        local was, now = snap[s.id], self.gear[s.id]
+        local wasID = was and was.itemID or nil
+        local nowID = now and not now.empty and now.itemID or nil
+        if wasID ~= nowID then
+            diff[#diff + 1] = { slotID = s.id, from = was, to = (nowID and now) or nil }
+        end
+    end
+    return diff
+end
+
+-------------------------------------------------------------------------------
+-- Equipment sets: a profile follows the set it was made for
+-------------------------------------------------------------------------------
+function ns:EquipmentSetNames()
+    local names = {}
+    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetIDs and C_EquipmentSet.GetEquipmentSetInfo) then return names end
+    local ok, ids = pcall(C_EquipmentSet.GetEquipmentSetIDs)
+    if not ok or type(ids) ~= "table" then return names end
+    for _, id in ipairs(ids) do
+        local ok2, name = pcall(C_EquipmentSet.GetEquipmentSetInfo, id)
+        if ok2 and type(name) == "string" then names[#names + 1] = name end
+    end
+    return names
+end
+
+-- The equipment set worn right now, by the game's own equipped flag.
+function ns:EquippedSetName()
+    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetIDs and C_EquipmentSet.GetEquipmentSetInfo) then return nil end
+    local ok, ids = pcall(C_EquipmentSet.GetEquipmentSetIDs)
+    if not ok or type(ids) ~= "table" then return nil end
+    for _, id in ipairs(ids) do
+        local ok2, name, _, _, isEquipped = pcall(C_EquipmentSet.GetEquipmentSetInfo, id)
+        if ok2 and isEquipped == true and type(name) == "string" then return name end
+    end
+    return nil
+end
+
+-- The set a profile follows: the one recorded at import, else the set
+-- whose name ends the profile's name or its Pawn scale name (Ask Mr.
+-- Robot names scales "<char> - <spec> <setup>" and sets "<setup>").
+local function SetFor(scale, names)
+    if scale.setName then return scale.setName end
+    local best
+    for _, candidate in ipairs({ scale.name, scale.pawnName }) do
+        local lname = type(candidate) == "string" and candidate:lower() or ""
+        for _, n in ipairs(names) do
+            local ln = n:lower()
+            if #ln > 0 and #lname >= #ln and lname:sub(-#ln) == ln and (not best or #n > #best) then best = n end
+        end
+    end
+    return best
+end
+
+function ns:StatProfileSet(scale)
+    if not scale then return nil end
+    return SetFor(scale, self:EquipmentSetNames())
+end
+
+-- Switches to the profile that follows the worn equipment set, if there
+-- is one for this spec. Returns its index, or nil.
+function ns:FollowEquipmentSet()
+    local set = self:EquippedSetName()
+    if not set then return nil end
+    local names = self:EquipmentSetNames()
+    local active = self:GetActiveStatProfile()
+    for i, scale in ipairs(self:GetStatProfiles()) do
+        if SetFor(scale, names) == set then
+            if active ~= i then self:SetActiveStatProfile(i) end
+            return i
+        end
+    end
+    return nil
+end
+
+ns:On("GEAR_UPDATED", function() ns:FollowEquipmentSet() end)
 
 -- Chat listing for /sf pawn.
 function ns:PrintStatProfiles()

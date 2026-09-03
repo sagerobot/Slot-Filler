@@ -23,4 +23,5 @@ Evaluate.lua
 Voidcore.lua
 UI.lua
 Options.lua
+AMR.lua
 LFGHook.lua

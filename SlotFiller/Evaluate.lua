@@ -105,13 +105,19 @@ end
 -------------------------------------------------------------------------------
 -- Classification of one drop against one equipped item
 -------------------------------------------------------------------------------
-local function Classify(g, dropIlvl, dropPotential, itemState, slotState)
+-- `owned`: the best copy of the item you hold, if any. A copy that already
+-- reaches the drop's fully upgraded level makes the drop redundant; a
+-- weaker copy leaves it an upgrade (over the copy too).
+local function Classify(g, dropIlvl, dropPotential, itemState, slotState, owned)
     local r = {}
     r.gain = dropIlvl - (g.ilvl or 0)
     r.potentialGain = (dropPotential or dropIlvl) - (g.potential or 0)
     if itemState == "exclude" then
         r.class = NONE
         r.reason = "excluded"
+    elseif owned and (dropPotential or dropIlvl) <= (owned.potential or 0) then
+        r.class = NONE
+        r.reason = "owned"
     elseif itemState == "want" or slotState == "want" then
         r.class = WANT
     elseif g.empty then
@@ -214,6 +220,11 @@ function ns:EvaluateItem(item, ctx)
     end
     local slotState = self:GetSlotState(best)
     local itemState = self:GetItemState(item.itemID)
+    -- already yours: equipped, in the bags or a bank (the best copy), or
+    -- already catalyzed into the set piece worn in this slot
+    local owned = self:OwnedCopy(item.itemID)
+    if not owned and self.CatalyzedCopy then owned = self:CatalyzedCopy(eval, g) end
+    eval.owned = owned
 
     -- Off-hand sanity: two-hander users don't want off-hands, and a shield or
     -- held item is not a replacement for a weapon in the off hand.
@@ -243,11 +254,11 @@ function ns:EvaluateItem(item, ctx)
         if vcLevel ~= ctx.voidcore then eval.voidcoreMatched = vcLevel end
     end
 
-    local drop = Classify(g, dropLevel.ilvl, dropLevel.potential, itemState, slotState)
+    local drop = Classify(g, dropLevel.ilvl, dropLevel.potential, itemState, slotState, owned)
     eval.class, eval.reason, eval.gain, eval.potentialGain = drop.class, drop.reason, drop.gain, drop.potentialGain
     -- no roll verdict for what a bonus roll cannot award (the omni token)
     if vcLevel and vcLevel.ilvl and not item.noRoll then
-        eval.voidcore = Classify(g, vcLevel.ilvl, vcLevel.potential, itemState, slotState)
+        eval.voidcore = Classify(g, vcLevel.ilvl, vcLevel.potential, itemState, slotState, owned)
     end
     -- Weighted values (Pawn scale): the drop at its (matched) level vs the equipped item.
     local scale = ctx.statWeights
@@ -445,6 +456,7 @@ end
 
 function ns:Evaluate()
     wipe(dropsAtKey)
+    self:ClearOwnedCache()
     local ctx = self:GetDropContext()
     local results = {}
     for _, d in ipairs(self.dungeons) do
@@ -594,6 +606,7 @@ ns:RegisterEvent("ITEM_DATA_LOAD_RESULT", function(itemID, success)
 end)
 
 ns:On("GEAR_UPDATED", Reevaluate)
+ns:On("BAGS_UPDATED", Reevaluate)
 ns:On("LOOT_UPDATED", Reevaluate)
 ns:On("SETTINGS_CHANGED", Reevaluate)
 ns:On("TRACKS_CHANGED", Reevaluate)

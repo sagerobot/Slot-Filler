@@ -7,7 +7,7 @@
 -- spec in the character's saved variables.
 local _, ns = ...
 
-local CACHE_VERSION = 10
+local CACHE_VERSION = 11
 local CACHE_MAX_AGE = 7 * 24 * 3600
 
 local DIFF_KEYSTONE = (DifficultyUtil and DifficultyUtil.ID and DifficultyUtil.ID.DungeonChallenge) or 8
@@ -153,8 +153,9 @@ local function EquipInfo(itemID)
 end
 
 -- The class's current tier set from the journal's Class Sets tab: the set
--- with the highest base item level, its pieces by inventory type. Tier
--- tokens are judged as the piece they turn into.
+-- whose pieces are exactly the five tier slots (the PvP set has eight),
+-- the highest base item level among those; its pieces by inventory type.
+-- Tier tokens are judged as the piece they turn into.
 local function ReadClassSet(classID, specID)
     if not (C_LootJournal and C_LootJournal.GetItemSetItems) then return nil end
     local sets
@@ -174,30 +175,47 @@ local function ReadClassSet(classID, specID)
         if ok then sets = v end
     end
     if type(sets) ~= "table" then return nil end
-    local best
+    local TIER = { INVTYPE_HEAD = "head", INVTYPE_SHOULDER = "shoulder", INVTYPE_CHEST = "chest", INVTYPE_ROBE = "chest",
+        INVTYPE_HAND = "hands", INVTYPE_LEGS = "legs" }
+    local function Pieces(setID)
+        local ok, items = pcall(C_LootJournal.GetItemSetItems, setID)
+        if not ok or type(items) ~= "table" then return nil end
+        local pieces, slots, n = {}, {}, 0
+        for _, info in ipairs(items) do
+            local id = info.itemID
+            if id then
+                local equipLoc, icon, itemClassID, subClassID = EquipInfo(id)
+                if equipLoc and ns.INVTYPE_SLOTS[equipLoc] then
+                    pieces[equipLoc] = { itemID = id, link = "item:" .. id, icon = icon, equipLoc = equipLoc,
+                        classID = itemClassID, subClassID = subClassID, piece = true }
+                    n = n + 1
+                    if TIER[equipLoc] then slots[TIER[equipLoc]] = true end
+                end
+            end
+        end
+        local tierSlots = 0
+        for _ in pairs(slots) do tierSlots = tierSlots + 1 end
+        return pieces, n, tierSlots == 5 and n == 5
+    end
+    local best, bestPieces
     for _, set in ipairs(sets) do
         local lvl = tonumber(set.itemLevel) or 0
-        if set.setID and (not best or lvl > best.itemLevel or (lvl == best.itemLevel and set.setID > best.setID)) then
-            best = { setID = set.setID, name = set.name, itemLevel = lvl }
-        end
-    end
-    if not best then return nil end
-    local ok, items = pcall(C_LootJournal.GetItemSetItems, best.setID)
-    if not ok or type(items) ~= "table" then return nil end
-    best.pieces = {}
-    for _, info in ipairs(items) do
-        local id = info.itemID
-        if id then
-            local equipLoc, icon, itemClassID, subClassID = EquipInfo(id)
-            if equipLoc and ns.INVTYPE_SLOTS[equipLoc] then
-                local piece = { itemID = id, link = "item:" .. id, icon = icon, equipLoc = equipLoc,
-                    classID = itemClassID, subClassID = subClassID, piece = true }
-                ns:FillItemInfo(piece)
-                best.pieces[equipLoc] = piece
+        if set.setID then
+            local pieces, n, tier = Pieces(set.setID)
+            if pieces and n > 0 then
+                local candidate = { setID = set.setID, name = set.name, itemLevel = lvl, tier = tier }
+                -- a tier-shaped set beats any other; then the highest base level
+                if not best or (tier and not best.tier) or (tier == best.tier and (lvl > best.itemLevel or (lvl == best.itemLevel and set.setID > best.setID))) then
+                    best, bestPieces = candidate, pieces
+                end
             end
         end
     end
-    ns:Debug(string.format("Class set: %s (%d), %d pieces", tostring(best.name), best.setID, (function() local n = 0; for _ in pairs(best.pieces) do n = n + 1 end; return n end)()))
+    if not best then return nil end
+    for _, piece in pairs(bestPieces) do ns:FillItemInfo(piece) end
+    best.pieces = bestPieces
+    ns:Debug(string.format("Class set: %s (%d), %d pieces%s", tostring(best.name), best.setID, (function() local n = 0; for _ in pairs(best.pieces) do n = n + 1 end; return n end)(),
+        best.tier and "" or " (no five-slot set found)"))
     return best
 end
 

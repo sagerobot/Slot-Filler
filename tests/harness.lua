@@ -164,6 +164,11 @@ local ITEMS = {
     [7005] = { "INVTYPE_CHEST", 4, 3, 1, "Venom Hauberk", { HASTE = 70, MASTERY = 30 } },
     [7010] = { "INVTYPE_HAND", 4, 3, 1, "Venom Grips", { CRIT = 50, VERS = 50 } },
     [7007] = { "INVTYPE_LEGS", 4, 3, 1, "Venom Legguards", { MASTERY = 60, HASTE = 40 } },
+    -- the PvP set: eight pieces at a higher base level, not the tier set
+    [7101] = { "INVTYPE_HEAD", 4, 3, 1, "Warmonger's Helm" }, [7103] = { "INVTYPE_SHOULDER", 4, 3, 1, "Warmonger's Epaulets" },
+    [7105] = { "INVTYPE_CHEST", 4, 3, 1, "Warmonger's Chestguard" }, [7110] = { "INVTYPE_HAND", 4, 3, 1, "Warmonger's Grips" },
+    [7107] = { "INVTYPE_LEGS", 4, 3, 1, "Warmonger's Leggings" }, [7109] = { "INVTYPE_WRIST", 4, 3, 1, "Warmonger's Armguards" },
+    [7106] = { "INVTYPE_WAIST", 4, 3, 1, "Warmonger's Cinch" }, [7108] = { "INVTYPE_FEET", 4, 3, 1, "Warmonger's Greaves" },
     -- equipped
     [5001] = { "INVTYPE_HEAD", 4, 4, 1, "Old Helm", { HASTE = 80, MASTERY = 40 } },
     [5013] = { "INVTYPE_TRINKET", 4, 0, 1, "Trinket A" },
@@ -445,8 +450,10 @@ local lootDelayed = { [1309] = 1 } -- first read has no links
 _G.C_LootJournal = {
     GetClassAndSpecFilters = function() return 0, 0 end,
     SetClassAndSpecFilters = function(c, s) _G.LJ_FILTER = { c, s } end,
-    GetFilteredItemSets = function() return { { setID = 900, name = "Old Set", itemLevel = 250 }, { setID = 901, name = "Venom Set", itemLevel = 279 } } end,
+    GetFilteredItemSets = function() return { { setID = 900, name = "Old Set", itemLevel = 250 }, { setID = 901, name = "Venom Set", itemLevel = 279 },
+        { setID = 902, name = "Venomous Warmonger's Links", itemLevel = 300 } } end,
     GetItemSetItems = function(setID)
+        if setID == 902 then return { { itemID = 7101 }, { itemID = 7103 }, { itemID = 7105 }, { itemID = 7110 }, { itemID = 7107 }, { itemID = 7109 }, { itemID = 7106 }, { itemID = 7108 } } end
         if setID ~= 901 then return {} end
         return { { itemID = 7001 }, { itemID = 7003 }, { itemID = 7005 }, { itemID = 7010 }, { itemID = 7007 } }
     end,
@@ -548,7 +555,7 @@ LFGListFrame.SearchPanel.ScrollBox = NewWidget("Frame")
 -- Load the addon
 -------------------------------------------------------------------------------
 local ns = {}
-local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Rating.lua", "Loot.lua", "Evaluate.lua", "Voidcore.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
+local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Rating.lua", "Loot.lua", "Evaluate.lua", "Voidcore.lua", "UI.lua", "Options.lua", "AMR.lua", "LFGHook.lua" }
 for _, f in ipairs(files) do
     local chunk, err = loadfile(ADDON_DIR .. f)
     assert(chunk, err)
@@ -621,7 +628,8 @@ local idol = twin.loot.heroic.items[4]
 check(idol and idol.itemID == 270912 and idol.token and idol.equipLoc == "INVTYPE_HAND", "the season's own tokens are known by id: Venomcast Idol is hands")
 local curio = twin.loot.heroic.items[5]
 check(curio and curio.itemID == 270909 and curio.token and curio.equipLoc == "TIER_ANY", "the Curio is a token for any set slot")
-check(ns.loot.classSet and ns.loot.classSet.name == "Venom Set" and ns.loot.classSet.pieces.INVTYPE_HAND.itemID == 7010, "the class set with the highest base level is read from the Class Sets tab")
+check(ns.loot.classSet and ns.loot.classSet.name == "Venom Set" and ns.loot.classSet.tier and ns.loot.classSet.pieces.INVTYPE_HAND.itemID == 7010,
+    "the five-slot tier set is read from the Class Sets tab, not the higher-level eight-piece PvP set")
 check(idol.piece and idol.piece.itemID == 7010 and idol.piece.name == "Venom Grips", "the hands token carries the class's hands piece")
 check(curio.pieces and #curio.pieces == 5 and curio.pieces[1].itemID == 7001 and curio.pieces[5].itemID == 7007, "the Curio carries all five pieces")
 check(ns.cdb.lootCache[30][72].raids == raids, "raids cached with the dungeons")
@@ -900,6 +908,66 @@ ns:CheckObtained()
 RunTimers()
 check(ns:GetItemState(1008) == nil and ns.cdb.obtained[72][1008], "wanted item removed once obtained")
 BAGS[1008] = nil
+-- a drop already in the bags is owned: no upgrade, no roll
+do
+BAGS[1007] = 1
+ns:Evaluate()
+local ownedEval
+for _, e in ipairs(ns:ResultForDungeon(ns.dungeonByMapID[584]).items) do if e.item.itemID == 1007 then ownedEval = e end end
+check(ownedEval and ownedEval.owned and ownedEval.class == ns.UPGRADE_NONE and ownedEval.reason == "owned" and ownedEval.voidcore.reason == "owned",
+    "a cloak already in the bags is owned: neither the drop nor the roll is an upgrade")
+check(ns.RollValue(ns, ownedEval) == 0, "an owned item is worth nothing to a roll")
+BAGS[1007] = nil
+ns:Evaluate()
+for _, e in ipairs(ns:ResultForDungeon(ns.dungeonByMapID[584]).items) do if e.item.itemID == 1007 then ownedEval = e end end
+check(not ownedEval.owned and ownedEval.class == ns.UPGRADE_TRACK, "out of the bags it is an upgrade again")
+-- Syndicator remembers the bank between sessions, with each slot's link:
+-- a Champion cloak in this character's bank and a Myth ring in the
+-- warband bank; another character's data is not asked for
+_G.Syndicator = { API = {
+    IsReady = function() return true end,
+    GetCurrentCharacter = function() return "Tester-Realm" end,
+    GetCharacter = function(name)
+        if name ~= "Tester-Realm" then return nil end
+        return { bags = { {} }, bank = { { { itemID = 1007, itemLink = LinkWithBonus(1007, BonusFor(3, 1)), itemCount = 1 } } }, equipped = {}, void = {} }
+    end,
+    GetWarband = function() return { bank = { { slots = { { itemID = 1005, itemLink = LinkWithBonus(1005, BonusFor(5, 1)), itemCount = 1 } } } } } end,
+} }
+ns:ClearOwnedCache()
+local cloakCopy, ringCopy = ns:OwnedCopy(1007), ns:OwnedCopy(1005)
+check(cloakCopy and cloakCopy.where == "bank" and cloakCopy.track and cloakCopy.track.key == "Champion" and cloakCopy.potential == 308, "Syndicator: the banked cloak is known at Champion 1/6, up to 308")
+check(ringCopy and ringCopy.where == "warband bank" and ringCopy.track.key == "Myth" and not ns:OwnsItem(1004), "the warband-banked ring is known at Myth; the sword is not owned")
+ns:Evaluate()
+local cloakEval, ringEval2
+for _, e in ipairs(ns:ResultForDungeon(ns.dungeonByMapID[584]).items) do
+    if e.item.itemID == 1007 then cloakEval = e elseif e.item.itemID == 1005 then ringEval2 = e end
+end
+check(cloakEval and cloakEval.owned and cloakEval.reason == nil and cloakEval.class == ns.UPGRADE_TRACK, "a Hero drop of the cloak still beats the Champion copy: an upgrade, with the copy noted")
+check(ringEval2 and ringEval2.reason == "owned" and ringEval2.class == ns.UPGRADE_NONE, "a Hero drop of the ring is redundant next to the Myth copy")
+_G.Syndicator = nil
+ns:ClearOwnedCache()
+check(not ns:OwnsItem(1007), "without it the client's own counts stand")
+ns:Evaluate()
+end
+-- a drop already put through the Catalyst: the worn set piece carries its
+-- exact stats, so the drop is owned as "catalyzed"
+do
+    local wasHead = EQUIPPED[1]
+    ITEMS[1001][6] = { CRIT = 60, HASTE = 40 }          -- the Crown's stats are the set hood's
+    Equip(1, 7001, 321, "Upgrade Level: Hero 6/6")     -- the hood it became, worn
+    ns:ClearStatCache(); ns:ScanGear(); ns:Evaluate()
+    local crown
+    for _, e in ipairs(ns:ResultForDungeon(ns.dungeonByMapID[587]).items) do if e.item.itemID == 1001 then crown = e end end
+    check(crown and crown.owned and crown.owned.catalyzed and crown.owned.itemID == 7001 and crown.reason == "owned" and crown.class == ns.UPGRADE_NONE,
+        "the Crown is owned, catalyzed into the worn Venom Hood")
+    check(ns:StatsAlike({ CRIT = 75, MASTERY = 116 }, { CRIT = 60, MASTERY = 93 }) and not ns:StatsAlike({ CRIT = 75, MASTERY = 116 }, { CRIT = 116, MASTERY = 75 }),
+        "stats alike means the same secondaries in the same proportions, whatever the level")
+    ITEMS[1001][6] = nil
+    EQUIPPED[1] = wasHead
+    ns:ClearStatCache(); ns:ScanGear(); ns:Evaluate()
+    for _, e in ipairs(ns:ResultForDungeon(ns.dungeonByMapID[587]).items) do if e.item.itemID == 1001 then crown = e end end
+    check(not crown.owned, "with different stats worn it is a drop again")
+end
 -- share the list
 ns:SetItemState(1002, "want"); ns:SetItemState(1005, "want")
 local exported = ns:ExportWanted()
@@ -921,6 +989,7 @@ ns:SetTargetKey(10)
 RunTimers()
 
 -- item links per key level / Voidcore
+do
 local head
 for _, it in ipairs(ns:GetDungeonLoot(587)) do if it.itemID == 1001 then head = it end end
 check(head and head.links and head.links[10] and BonusOfLink(head.links[10]) == BonusFor(4, 3), "journal preview link captured for +10 (Hero 3/6)")
@@ -987,6 +1056,7 @@ ilvl, src = ns:RewardIlvl(10)
 check(ilvl == 311 and src == "fallback", "with nothing remembered it falls back to the season table (" .. tostring(ilvl) .. ", " .. tostring(src) .. ")")
 local v, vsrc = ns:VaultIlvl(10)
 check(v == 318 and vsrc == "fallback", "vault level from fallback table")
+end
 check(ns:RewardIlvl(2) == 295 and ns:RewardIlvl(15) == 311, "fallback covers +2 and beyond the table")
 local requestsBefore = REQUESTED_REWARDS or 0
 local dungeonUpdates = 0
@@ -1196,6 +1266,22 @@ local imported, pIndex = ns:ImportPawnString(PAWN)
 check(settingsFires == 1, "importing a profile fires SETTINGS_CHANGED once")
 RunTimers()
 check(imported and pIndex == 1 and ns:StatProfileName() == "Erunak - Restoration Raid", "import saves an active profile named after the scale")
+check(imported.gear and imported.gear[1] and imported.gear[1].itemID == 5001 and #ns:StatProfileGearDiff(imported) == 0, "a profile remembers the gear it was made for")
+do
+    local fakeButton = { Text = { SetText = function(self, t) self.text = t end } }
+    ns.UI.RefreshStatProfileButton(fakeButton)
+    check(not fakeButton.Text.text:find("gear changed", 1, true), "the weights button is quiet while the gear matches")
+    local wasHead = EQUIPPED[1]
+    Equip(1, 7001, 318, "Upgrade Level: Hero 5/6")
+    ns:ScanGear()
+    local diff = ns:StatProfileGearDiff(imported)
+    check(#diff == 1 and diff[1].slotID == 1 and diff[1].from.itemID == 5001 and diff[1].to.itemID == 7001, "a new helm shows as one changed slot, old and new named")
+    ns.UI.RefreshStatProfileButton(fakeButton)
+    check(fakeButton.Text.text:find("gear changed", 1, true), "the weights button says the gear changed")
+    EQUIPPED[1] = wasHead
+    ns:ScanGear()
+    check(#ns:StatProfileGearDiff(imported) == 0, "back in the old helm it is quiet again")
+end
 check(ns:GetStatMode() == "auto", "importing weights switches to Auto")
 check(ns.cdb.statProfiles[ns:GetEvalSpecID()][1] == imported and ns.db.statProfiles == nil, "profiles live in the per-character saved variables")
 order, src = ns:GetStatPriority()
@@ -1220,6 +1306,13 @@ check(order[1] == "HASTE" and order[2] == "MASTERY", "the profile in use orders 
 fr = ns:EvaluateDungeonAt(fake, 10)
 check(fr.items[1].item.itemID == 1009 and fr.items[1].value and math.abs(fr.items[1].value - (ns:ItemValue(Link(1009), second) or 0)) < 0.01, "values come from the profile in use")
 check(#ns:GetStatProfiles() == 2, "both profiles kept")
+do
+    local again, againIndex = ns:ImportPawnString((PAWN:gsub("CritRating=%d+%.?%d*", "CritRating=99")))
+    check(againIndex == 1 and again == imported and #ns:GetStatProfiles() == 2 and imported.weights.CRIT == 99 and ns:StatProfileName() == "Erunak - Restoration Raid",
+        "re-importing the same scale replaces its profile in place, newer weights win")
+    ns:ImportPawnString(PAWN)
+    check(#ns:GetStatProfiles() == 2 and imported.weights.CRIT ~= 99, "and again: still two profiles, the weights the latest paste")
+end
 check(ns:SetActiveStatProfile(1) and ns:StatProfileName() == "Erunak - Restoration Raid", "switching back to the first profile")
 RunTimers()
 order = ns:GetStatPriority()
@@ -1271,7 +1364,23 @@ ns.uiExpandedMapID = 587
 ns:RefreshWindow()
 ns:ShowPage("gear")
 check(ns:CurrentPage() == "gear", "Gear tab shown")
-ns.uiExpandedSlotID = 12
+ns.uiExpandedSlotID = 11
+ns:RefreshWindow()
+do
+    local ringRow, secondRing
+    for _, r in ipairs(ns.UI.Pools.gearRows) do
+        if r:IsShown() and r.slotID == 11 then ringRow = r end
+        if r:IsShown() and r.slotID == 12 then secondRing = r end
+    end
+    check(ringRow and not secondRing and ringRow.Name:GetText():find("^Rings") and ringRow.Name:GetText():find("·", 1, true), "rings are one Gear row showing both worn rings (" .. tostring(ringRow and ringRow.Name:GetText()) .. ")")
+    local ringDrops = 0
+    for _, it in ipairs(ns.UI.Pools.gearItems) do if it:IsShown() and it.eval and it.eval.slotID == 12 then ringDrops = ringDrops + 1 end end
+    check(ringDrops > 0, "the drops judged against the weaker ring list under that one row")
+    ns:CycleSlotState(11, 12)
+    check(ns:GetSlotState(11) == "want" and ns:GetSlotState(12) == "want", "right-click sets both rings")
+    ns:CycleSlotState(11, 12); ns:CycleSlotState(11, 12)
+    check(ns:GetSlotState(11) == "auto" and ns:GetSlotState(12) == "auto", "and cycles both back to Auto")
+end
 ns:RefreshWindow()
 ns.db.gearSort = "upgrades"
 ns:RefreshWindow()
@@ -1329,6 +1438,66 @@ local curioRow2
 for _, it in ipairs(ns.UI.Pools.raidItems) do if it:IsShown() and it.eval and it.eval.token and it.eval.token.itemID == 270909 then curioRow2 = it end end
 check(curioRow2 and not curioRow2.VC:IsShown(), "the Curio row has no Voidcore star")
 
+-- weight profiles follow equipment sets; the box under Ask Mr. Robot's window
+do
+    _G.EQUIPPED_SET = nil
+    _G.C_EquipmentSet = {
+        GetEquipmentSetIDs = function() return { 1, 2 } end,
+        GetEquipmentSetInfo = function(id)
+            if id == 1 then return "Raid", 1, 1, EQUIPPED_SET == "Raid" end
+            if id == 2 then return "M+", 1, 2, EQUIPPED_SET == "M+" end
+        end,
+    }
+    local activeBefore = ns:GetActiveStatProfile()
+    local n0 = #ns:GetStatProfiles()
+    local raidProfile, raidIndex = ns:ImportPawnString('( Pawn: v1: "Erunak - Restoration Raid": Class=Shaman, Spec=Restoration, Intellect=80, CritRating=70, HasteRating=60, Versatility=40, MasteryRating=20 )')
+    local mplusProfile, mplusIndex = ns:ImportPawnString('( Pawn: v1: "Erunak - Restoration M+": Class=Shaman, Spec=Restoration, Intellect=80, HasteRating=60, MasteryRating=50, CritRating=30, Versatility=20 )', "Keys")
+    raidProfile.setName, mplusProfile.setName = nil, nil
+    check(raidIndex == 1 and mplusIndex == n0 + 1 and ns:StatProfileSet(raidProfile) == "Raid" and ns:StatProfileSet(mplusProfile) == "M+",
+        "profiles match sets by the end of their names: 'Erunak - Restoration Raid' -> Raid (replacing the old Raid weights), the Pawn name '... M+' -> M+")
+    _G.EQUIPPED_SET = "M+"
+    check(ns:FollowEquipmentSet() == mplusIndex and ns:GetActiveStatProfile() == mplusIndex, "wearing the M+ set switches to its profile")
+    _G.EQUIPPED_SET = "Raid"
+    ns:ScanGear()
+    local followed = ns:StatProfileSet(ns:GetStatProfiles()[ns:GetActiveStatProfile()])
+    check(followed == "Raid" and ns:GetActiveStatProfile() ~= mplusIndex, "a gear change while wearing the Raid set switches to a profile that follows Raid")
+    local stays = ns:GetActiveStatProfile()
+    _G.EQUIPPED_SET = nil
+    check(ns:FollowEquipmentSet() == nil and ns:GetActiveStatProfile() == stays, "no set worn: the profile stays")
+    ns:DeleteStatProfile(mplusIndex)
+    ns:SetActiveStatProfile(activeBefore)
+    -- the AMR box, with the setups the AMR addon imported
+    _G.AskMrRobot = { Show = function() end, Hide = function() end, db = { char = { GearSetups = {
+        { Label = "Restoration Raid", SpecSlot = 3, Gear = { [1] = { id = 7001 }, [5] = { id = 5005 } } },
+        { Label = "Restoration M+", SpecSlot = 3, Gear = { [1] = { id = 5001 } } },
+        { Label = "Elemental", SpecSlot = 1, Gear = {} },
+    } } } }
+    _G.GetSpecialization = _G.GetSpecialization or function() return 3 end
+    local setups = ns:AmrSetups()
+    check(#setups == 3 and setups[1].label == "Restoration Raid" and setups[1].gear[1] == 7001, "the setups AMR imported are read with their gear")
+    _G.AmrUiFrame1 = NewWidget("Frame", "AmrUiFrame1"); AmrUiFrame1:SetSize(800, 600); AmrUiFrame1:Show()
+    local amrBox = ns:ShowAmrBox()
+    check(amrBox and amrBox:IsShown() and amrBox.Edit and amrBox.Import, "the Pawn box appears under AMR's window")
+    local before = #ns:GetStatProfiles()
+    amrBox.Edit:SetText('( Pawn: v1: "Erunak - Restoration Raid": Class=Shaman, Spec=Restoration, Intellect=80, CritRating=70, HasteRating=60, Versatility=40, MasteryRating=20 )')
+    amrBox.Import:GetScript("OnClick")(amrBox.Import)
+    local saved = ns:GetStatProfiles()[1]
+    check(#ns:GetStatProfiles() == before and saved.weights.CRIT == 70 and amrBox.Result:GetText():find("for the Restoration Raid setup", 1, true),
+        "pasting a Pawn string there replaces that setup's profile (" .. tostring(amrBox.Result:GetText()) .. ")")
+    check(saved and saved.amrSetup == "Restoration Raid" and saved.setName == "Restoration Raid" and saved.gear[1].itemID == 7001, "the profile's gear is the setup's gear, its set the setup's label")
+    local diff = ns:StatProfileGearDiff(saved)
+    check(#diff >= 1 and diff[1].slotID == 1 and diff[1].from.itemID == 7001 and diff[1].to.itemID == 5001, "wearing the old helm instead of the setup's counts as changed gear")
+    check(amrBox.Result:GetText():find("Still without weights:", 1, true) and amrBox.Result:GetText():find("Restoration M+", 1, true) and not amrBox.Result:GetText():find("Elemental", 1, true),
+        "the box lists this spec's setups still without weights")
+    ns:ImportPawnString(PAWN)
+    ns:SetActiveStatProfile(activeBefore)
+    AmrUiFrame1:Hide()
+    check(not amrBox:IsShown(), "the box hides with AMR's window")
+    _G.AmrUiFrame1 = nil
+    _G.AskMrRobot = nil
+    _G.C_EquipmentSet = nil
+end
+
 -- Voidcore: the roll pools read from the Voidcache tooltips
 do
 ns:ClearVoidcorePools()
@@ -1347,13 +1516,19 @@ local inPool = {}
 for _, e in ipairs(twinS.items) do inPool[(e.token or e.item).itemID] = true end
 check(inPool[1008] and inPool[1009] and inPool[270912] and not inPool[1010] and not inPool[270909], "pool items matched by name, the token by its token name; the rolled token and the Curio absent")
 check(twinS.usable == 3 and twinS.chance == 1 and twinS.targets == (ns:IsVoidcoreTarget(1008) and 1 or 0), "every pool item would be a Myth roll upgrade (" .. twinS.usable .. "/" .. twinS.count .. ")")
-check(twinS.ev > 0 and twinS.best and twinS.bestValue >= twinS.ev and twinS.value / twinS.count == twinS.ev and twinS.bestValue <= 30 * 1.25 * 3,
+check(twinS.ideal <= twinS.usable and twinS.idealChance <= twinS.chance, "ideal rolls are a subset of usable ones (" .. twinS.ideal .. "/" .. twinS.usable .. ")")
+check(ns.IdealRoll(ns, { fit = 0.9 }, { class = ns.UPGRADE_TRACK }) and not ns.IdealRoll(ns, { fit = 0.3 }, { class = ns.UPGRADE_TRACK })
+    and ns.IdealRoll(ns, {}, { class = ns.UPGRADE_TRACK }) and ns.IdealRoll(ns, { fit = 0.6, equippedFit = 0.5 }, { class = ns.UPGRADE_TRACK })
+    and ns.IdealRoll(ns, { fit = 0.3 }, { class = ns.UPGRADE_TRACK, valueGain = 12 }) and not ns.IdealRoll(ns, { fit = 0.9 }, { class = ns.UPGRADE_NONE }),
+    "ideal: fits at 75%, or beats the worn piece, or gains weighted value; never a non-upgrade")
+check(twinS.ev > 0 and twinS.best and twinS.bestValue >= twinS.ev and twinS.value / twinS.count == twinS.ev and twinS.bestValue <= 30 * 1.25 * 1.25 * 3,
     "the expected gain is the mean roll value, empty slots capped; the best item is named (" .. tostring(twinS.best and twinS.best.item.name) .. " +" .. twinS.bestValue .. ")")
 local ringEval, chestEval
 for _, e in ipairs(twinS.items) do if e.item.itemID == 1009 then ringEval = e elseif e.item.itemID == 1008 then chestEval = e end end
 local ringValue = ns.RollValue(ns, ringEval)
-check(ringValue > 0 and ringEval.rollValue == ringValue and math.min(30, ringEval.voidcore.potentialGain or 0) * 0.75 * (ns:IsVoidcoreTarget(1009) and 3 or 1) == ringValue,
-    "a ring's roll value is its fully upgraded gain (capped) at the ring budget (" .. ringValue .. ")")
+local fitMult = ringEval.rollIdeal and 1.25 or ((ringEval.fit or 1) < 0.5 and 0.5 or 1)
+check(ringValue > 0 and ringEval.rollValue == ringValue and math.min(30, ringEval.voidcore.potentialGain or 0) * 0.75 * fitMult * (ns:IsVoidcoreTarget(1009) and 3 or 1) == ringValue,
+    "a ring's roll value is its fully upgraded gain (capped) at the ring budget, times the stat fit (" .. ringValue .. ")")
 ns:SetVoidcoreTarget(1009, true)
 local targeted = ns.RollValue(ns, ringEval)
 check(targeted == ringValue * 3, "a Voidcore target counts three times")
@@ -1409,7 +1584,7 @@ ns:RetryEmptyVoidcorePools()
 ns:VoidcoreSources()
 check(ns.voidcorePools["279623:16:" .. ns.db.targetKey].ready and not ns.voidcorePools["279621:16:" .. ns.db.targetKey].ready, "opening the tab keeps the lists that were read and asks again for the ones that never came")
 RunTimers()
-check(ns:VoidcoreSummary(twinS) == string.format("3 of 3 usable (100%%), +%.1f per roll", twinS.ev) .. (twinS.targets > 0 and ", 1 target" or ""), "summary line (" .. tostring(ns:VoidcoreSummary(twinS)) .. ")")
+check(ns:VoidcoreSummary(twinS) == string.format("%d ideal, 3 of 3 usable (100%%), +%.1f per roll", twinS.ideal, twinS.ev) .. (twinS.targets > 0 and ", 1 target" or ""), "summary line (" .. tostring(ns:VoidcoreSummary(twinS)) .. ")")
 ns:VoidcoreSourceFor(278289, 5, nil); RunTimers()
 local hs = ns:VoidcoreSourceFor(278289, 5, nil)
 check(hs and hs.diffKey == "heroic" and hs.count == 3 and hs.result.ctx.difficulty == "heroic", "a cache at another difficulty is evaluated at that difficulty")
@@ -1418,7 +1593,7 @@ local ds = ns:VoidcoreSourceFor(279623, 16, 8)
 check(ds and ds.kind == "dungeon" and ds.key == 8 and ds.ready and ds.count == 2, "a dungeon cache is read at the roll's key level (+8)")
 _G.GetSpellConfirmationPromptsInfo = function() return { { displayItemID = 278289, itemContext = 5, treasureContextLevel = 0 } } end
 local rollText = ns:RollWindowText()
-check(rollText and rollText:find("^The Twin Fangs: 3 of 3 usable"), "the roll window line names the source and its odds (" .. tostring(rollText) .. ")")
+check(rollText and rollText:find("^The Twin Fangs: %d+ ideal, 3 of 3 usable"), "the roll window line names the source and its odds (" .. tostring(rollText) .. ")")
 _G.GetSpellConfirmationPromptsInfo = nil
 ev(ns.eventFrame, "BONUS_ROLL_RESULT", "item", "|Hitem:1009|h", 1, 72)
 RunTimers()
@@ -1429,8 +1604,9 @@ local vcPage = SlotFillerFrame.Pages.voidcore
 check(ns:CurrentPage() == "voidcore" and SlotFillerFrame.Toolbar:IsShown() and vcPage.Strip.Text:GetText():find("2 Voidcores", 1, true), "Voidcore tab shown with the toolbar and the Voidcore count")
 for _ = 1, 6 do RunTimers(); ns:RefreshWindow() end
 local firstRow = ns.UI.Pools.rollRows[1]
-check(firstRow and firstRow.source and firstRow.source.name == ns:VoidcoreSources()[1].name and firstRow.Pool:GetText():find("/", 1, true) and firstRow.EGain:GetText():find("+", 1, true),
-    "rows in the ranked order with usable/pool and the expected gain")
+check(firstRow and firstRow.source and firstRow.source.name == ns:VoidcoreSources()[1].name
+    and firstRow.Pool:GetText():find(tostring(firstRow.source.ideal) .. "|r|cff888888/" .. tostring(firstRow.source.usable), 1, true) and firstRow.EGain:GetText():find("+", 1, true),
+    "rows in the ranked order with ideal/usable and the expected gain")
 check(vcPage.Strip.Text:GetText():find("Set 0/5", 1, true) and vcPage.Strip.Text:GetText():find("1 Catalyst charge", 1, true), "the strip shows set progress and Catalyst charges")
 local twinRow
 for _, r in ipairs(ns.UI.Pools.rollRows) do if r:IsShown() and r.source and r.source.name == "The Twin Fangs" then twinRow = r end end
@@ -1453,13 +1629,15 @@ for _, l in ipairs(tipLines2) do
     if l:find("Voidcore roll|r:", 1, true) then rollVerdict = true end
 end
 check(ringRow.roll and rollShown and rollVerdict and BonusOfLink(tipLinks2[1]) == BonusFor(5, 6), "a pool item's tooltip shows the item as the Myth 6/6 roll, with the roll's verdict (" .. tostring(tipLinks2[1]) .. ")")
-local chestRow
-for _, it in ipairs(ns.UI.Pools.rollItems) do if it:IsShown() and it.eval and it.eval.item.itemID == 1008 then chestRow = it end end
-tipLines2 = {}
-ns:ShowItemTooltip(chestRow)
-local catalystLine = false
-for _, l in ipairs(tipLines2) do if l:find("Catalyst: can become a set piece", 1, true) and l:find("1 charge", 1, true) then catalystLine = true end end
-check(catalystLine, "a tier-slot item's tooltip says the Catalyst can make it a set piece, with the charges")
+do
+    local chestRow
+    for _, it in ipairs(ns.UI.Pools.rollItems) do if it:IsShown() and it.eval and it.eval.item.itemID == 1008 then chestRow = it end end
+    tipLines2 = {}
+    ns:ShowItemTooltip(chestRow)
+    local catalystLine = false
+    for _, l in ipairs(tipLines2) do if l:find("Catalyst: can become a set piece", 1, true) and l:find("1 charge", 1, true) then catalystLine = true end end
+    check(catalystLine, "a tier-slot item's tooltip says the Catalyst can make it a set piece, with the charges")
+end
 GameTooltip.SetHyperlink, GameTooltip.AddLine = nil, nil
 check(SlotFillerFrame.SettingsButton ~= nil, "the settings cog sits in the title bar")
 ns:ToggleOptionsPanel()

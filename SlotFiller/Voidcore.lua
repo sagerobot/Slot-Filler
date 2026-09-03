@@ -318,6 +318,47 @@ function ns:IsCatalystCandidate(eval)
     return not ids[eval.item.itemID]
 end
 
+function ns:IsSetPiece(itemID)
+    return itemID ~= nil and SetPieceIDs(self)[itemID] == true
+end
+
+local SLOT_EQUIPLOC = { [1] = { "INVTYPE_HEAD" }, [3] = { "INVTYPE_SHOULDER" }, [5] = { "INVTYPE_CHEST", "INVTYPE_ROBE" }, [10] = { "INVTYPE_HAND" }, [7] = { "INVTYPE_LEGS" } }
+
+-- The class set's piece for a tier slot, or nil.
+function ns:SetPieceForSlot(slotID)
+    local set = self.loot and self.loot.classSet
+    if not set or not set.pieces then return nil end
+    for _, inv in ipairs(SLOT_EQUIPLOC[slotID or 0] or {}) do
+        if set.pieces[inv] then return set.pieces[inv] end
+    end
+    return nil
+end
+
+-- The set piece this drop has already become: worn in its slot, or a copy
+-- of the slot's set piece you hold, with this drop's stats (the Catalyst
+-- keeps them). An owned-copy entry flagged catalyzed, or nil.
+function ns:CatalyzedCopy(eval, worn)
+    if not eval or not eval.stats or not self:IsCatalystCandidate(eval) then return nil end
+    local candidates = {}
+    if worn and not worn.empty and worn.link and self:IsSetPiece(worn.itemID) then candidates[#candidates + 1] = worn end
+    local piece = self:SetPieceForSlot(eval.slotID)
+    if piece then
+        local copy = self:OwnedCopy(piece.itemID)
+        if copy and copy.link then candidates[#candidates + 1] = copy end
+    end
+    for _, c in ipairs(candidates) do
+        if self:StatsAlike(eval.stats, self:ItemStats(c.link)) then
+            local entry = {}
+            for k, v in pairs(c) do entry[k] = v end
+            entry.catalyzed = true
+            entry.where = entry.where or "equipped"
+            entry.name = entry.name or (entry.link and entry.link:match("%[(.-)%]")) or nil
+            return entry
+        end
+    end
+    return nil
+end
+
 -- "Set 2/5, 4-piece needs 2, 1 charge" for a status line; nil without a set.
 function ns:SetProgressText()
     local p = self:SetProgress()
@@ -343,19 +384,41 @@ local SLOT_BUDGET = { [1] = 1, [5] = 1, [7] = 1, [3] = 0.75, [10] = 0.75, [6] = 
     [11] = 0.75, [12] = 0.75, [9] = 0.56, [15] = 0.56, [13] = 1.25, [14] = 1.25, [16] = 1, [17] = 1 }
 local TWO_HAND = { INVTYPE_2HWEAPON = true, INVTYPE_RANGED = true, INVTYPE_RANGEDRIGHT = true }
 
+-- An ideal roll: an upgrade whose stats fit as well. With a weight
+-- profile, a weighted gain over the piece it replaces; without one, a stat
+-- match of at least 75%, or better than that piece's. An item with no
+-- secondaries to judge (a weapon, most trinkets) counts on level alone.
+local IDEAL_FIT = 0.75
+local function IdealRoll(self, eval, vc)
+    if not vc or not self:CountsAsUpgrade(vc) then return false end
+    if eval.fit == nil then return true end
+    if vc.valueGain ~= nil then return vc.valueGain > 0 end
+    if eval.equippedFit and eval.fit > eval.equippedFit then return true end
+    return eval.fit >= IDEAL_FIT
+end
+ns.IdealRoll = IdealRoll
+
+-- Returns value, usable, ideal.
 local function RollValue(self, eval)
     local vc = eval.voidcore
-    if not vc then return 0, false end
+    if not vc or vc.reason == "owned" then return 0, false, false end
     local itemID = eval.item.itemID
     local target = self:IsVoidcoreTarget(itemID)
     local wanted = self:GetItemState(itemID) == "want"
-    if not (self:CountsAsUpgrade(vc) or target or wanted) then return 0, false end
+    if not (self:CountsAsUpgrade(vc) or target or wanted) then return 0, false, false end
+    local ideal = IdealRoll(self, eval, vc)
     -- capped: an empty slot is a big gain, not a bottomless one
     local levels = math.min(30, math.max(vc.potentialGain or 0, vc.gain or 0, 0))
     if vc.class == self.UPGRADE_STAT then levels = math.max(levels, 3) end
     if levels == 0 then levels = 3 end            -- chased regardless of level: still worth having
     local budget = TWO_HAND[eval.item.equipLoc] and 2 or SLOT_BUDGET[eval.slotID or 0] or 0.75
     local value = levels * budget
+    -- stats that fit count extra, stats that do not count half
+    if ideal then
+        value = value * 1.25
+    elseif eval.fit and eval.fit < 0.5 then
+        value = value * 0.5
+    end
     if target then
         value = value * 3
     elseif wanted then
@@ -363,7 +426,7 @@ local function RollValue(self, eval)
     elseif eval.slotID and self:GetSlotState(eval.slotID) == "want" then
         value = value * 1.5
     end
-    return value, true
+    return value, true, ideal
 end
 ns.RollValue = RollValue
 
@@ -423,7 +486,7 @@ end
 -- weight. A pool with every item rolled has refilled: the set is cleared.
 local function Source(self, name, r, cacheID, context, level, extra)
     local s = { name = name, result = r, cacheID = cacheID, context = context, level = level,
-        items = {}, rolledItems = {}, usable = 0, targets = 0, wanted = 0, value = 0, count = 0, total = 0, chance = 0, ev = 0, bestValue = 0 }
+        items = {}, rolledItems = {}, usable = 0, ideal = 0, targets = 0, wanted = 0, value = 0, count = 0, total = 0, chance = 0, idealChance = 0, ev = 0, bestValue = 0 }
     for k, v in pairs(extra or {}) do s[k] = v end
     local pool = cacheID and self:VoidcorePool(cacheID, context, level, s) or nil
     s.pool = pool
@@ -470,10 +533,11 @@ local function Source(self, name, r, cacheID, context, level, extra)
             s.rolledItems[#s.rolledItems + 1] = e.eval
         else
             local eval = e.eval
-            local v, usable = RollValue(self, eval)
-            eval.rollValue = v
+            local v, usable, ideal = RollValue(self, eval)
+            eval.rollValue, eval.rollIdeal = v, ideal
             s.items[#s.items + 1] = eval
             if usable then s.usable = s.usable + 1 end
+            if ideal then s.ideal = s.ideal + 1 end
             if self:IsVoidcoreTarget(eval.item.itemID) then s.targets = s.targets + 1 end
             if self:GetItemState(eval.item.itemID) == "want" then s.wanted = s.wanted + 1 end
             s.value = s.value + v
@@ -484,6 +548,7 @@ local function Source(self, name, r, cacheID, context, level, extra)
     s.count = s.tooltipRead and math.max(pool.count, #s.items) or #s.items
     if s.count > 0 then
         s.chance = s.usable / s.count
+        s.idealChance = s.ideal / s.count
         s.ev = s.value / s.count
     end
     return s
@@ -496,6 +561,7 @@ local function SortSources(list, mode)
         if mode == "chance" then
             if a.chance ~= b.chance then return a.chance > b.chance end
         elseif mode == "pool" then
+            if a.ideal ~= b.ideal then return a.ideal > b.ideal end
             if a.usable ~= b.usable then return a.usable > b.usable end
         elseif mode == "targets" then
             if a.targets ~= b.targets then return a.targets > b.targets end
@@ -554,7 +620,7 @@ function ns:VoidcoreSummary(s)
     if not s then return nil end
     if not s.ready then return "loot not scanned yet" end
     if s.count == 0 then return "nothing left in this pool" end
-    local text = string.format("%d of %d usable (%d%%), +%.1f per roll", s.usable, s.count, math.floor(s.chance * 100 + 0.5), s.ev)
+    local text = string.format("%d ideal, %d of %d usable (%d%%), +%.1f per roll", s.ideal, s.usable, s.count, math.floor(s.chance * 100 + 0.5), s.ev)
     if s.targets > 0 then text = text .. string.format(", %d target%s", s.targets, s.targets == 1 and "" or "s") end
     return text
 end

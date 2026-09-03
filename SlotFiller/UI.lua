@@ -286,7 +286,9 @@ end
 
 local function RefreshStatProfileButton(b)
     local name = ns:StatProfileName()
-    b.Text:SetText("|cffaaaaaaWeights:|r " .. (name or "|cff888888none|r"))
+    local _, scale = ns:GetActiveStatProfile()
+    local changed = scale and #ns:StatProfileGearDiff(scale) or 0
+    b.Text:SetText("|cffaaaaaaWeights:|r " .. (name or "|cff888888none|r") .. (changed > 0 and "  |cffff9900(gear changed)|r" or ""))
 end
 
 local function StatProfileDropdown(parent, w, h)
@@ -300,6 +302,27 @@ local function StatProfileDropdown(parent, w, h)
             GameTooltip:AddLine(ns:StatWeightsText(scale), 0.8, 0.8, 0.8, true)
             if scale.pawnName and scale.pawnName ~= scale.name then
                 GameTooltip:AddLine("Pawn scale: " .. tostring(scale.pawnName), 0.6, 0.6, 0.6, true)
+            end
+            local set = ns:StatProfileSet(scale)
+            if set then GameTooltip:AddLine("Follows the " .. set .. " equipment set: switched to when you wear it.", 0.6, 0.6, 0.6, true) end
+            local diff = ns:StatProfileGearDiff(scale)
+            if #diff > 0 then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine(string.format("|cffff9900Gear changed since these weights were made|r (%d slot%s):", #diff, #diff == 1 and "" or "s"), 1, 1, 1, true)
+                for i, d in ipairs(diff) do
+                    if i > 6 then GameTooltip:AddLine("  ...", 0.7, 0.7, 0.7); break end
+                    local slot = ns.SLOT_BY_ID[d.slotID]
+                    GameTooltip:AddLine(string.format("  %s: %s -> %s", slot and (slot.name or slot.key) or "?",
+                        d.from and (d.from.name or ("item " .. tostring(d.from.itemID))) or "empty",
+                        d.to and (d.to.link and d.to.link:match("%[(.-)%]") or ("item " .. tostring(d.to.itemID))) or "empty"), 0.8, 0.8, 0.8, true)
+                end
+                if scale.amrSetup then
+                    GameTooltip:AddLine("This is the gear of the " .. scale.amrSetup .. " setup from Ask Mr. Robot; wear that set, or re-sim and paste the new Pawn string.", 0.8, 0.8, 0.8, true)
+                else
+                    GameTooltip:AddLine("Weights shift with the gear they were simmed for: re-run Ask Mr. Robot and paste the new Pawn string in Settings.", 0.8, 0.8, 0.8, true)
+                end
+            elseif scale.gear then
+                GameTooltip:AddLine(scale.amrSetup and ("|cff888888Made for the " .. scale.amrSetup .. " setup's gear, which you wear now.|r") or "|cff888888Made for the gear you wear now.|r", 1, 1, 1, true)
             end
         else
             GameTooltip:AddLine("No profile in use: stats are ranked by how much of each your equipped gear carries.", 0.8, 0.8, 0.8, true)
@@ -317,7 +340,7 @@ ns.UI = { TextButton = TextButton, Check = Check, Tip = Tip, Dropdown = Dropdown
     StatProfileDropdown = StatProfileDropdown, RefreshStatProfileButton = RefreshStatProfileButton,
     IsMenuShown = function() return (menu and menu:IsShown()) and true or false end,
     -- row pools, for the test harness
-    Pools = { dungeonItems = dungeonItems, raidItems = raidItems, gearItems = gearItems, ioRows = ioRows, ioLadder = ioLadder,
+    Pools = { dungeonItems = dungeonItems, raidItems = raidItems, gearItems = gearItems, gearRows = gearRows, ioRows = ioRows, ioLadder = ioLadder,
         rollRows = rollRows, rollItems = rollItems } }
 
 -- Tooltips show the Voidcore roll while Shift is held: redraw the hovered
@@ -779,7 +802,7 @@ local function BuildRollsPage(page)
 
     local colHead = ColumnHeader(page, {
         { "best", "Source", nil, "Dungeons at the selected key, bosses at the Raid tab's difficulty. Click a row for its pool. Click here to sort by the best place to roll." },
-        { "pool", "Pool", COL_POOL, "Usable roll results over what the pool still holds for your loot spec. Click to sort." },
+        { "pool", "Ideal", COL_POOL, "Ideal rolls over usable ones. Ideal: an upgrade whose stats fit too (a 75% match, or better than the piece it replaces; with a weight profile, a weighted gain). Click to sort." },
         { "chance", "Chance", COL_CHANCE, "The share of the pool that would be an upgrade. Click to sort." },
         { "gain", "Gain", COL_EGAIN, "Item levels a roll here gains on average, slot-weighted; Voidcore targets and wanted items count extra. The tab sorts by this." },
         { "targets", "Targets", COL_TARGET, "Voidcore targets still in the pool. Click to sort." },
@@ -1333,6 +1356,8 @@ local function FillItemRow(it, eval, whereText, verdict)
     end
     if state == "exclude" then
         it.Gain:SetText("|cffff5555excluded|r")
+    elseif verdict.reason == "owned" then
+        it.Gain:SetText(eval.owned and eval.owned.catalyzed and "|cff888888catalyzed|r" or "|cff888888owned|r")
     elseif verdict.class == TRACK and verdict.gain then
         it.Gain:SetText(string.format("%s%+d|r|cff888888/%+d|r", Hex(TRACK), verdict.gain, verdict.potentialGain or 0))
     elseif verdict.class == ILVL and verdict.gain then
@@ -1372,16 +1397,19 @@ end
 -------------------------------------------------------------------------------
 function ns:ShowSlotTooltip(btn)
     local slot = self.SLOT_BY_ID[btn.slotID]
-    local g = self.gear[btn.slotID]
     GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-    GameTooltip:AddLine(slot.name or slot.key)
-    if g and not g.empty and g.link then
-        GameTooltip:AddLine(g.link)
-        GameTooltip:AddLine(EquippedDesc(g), 0.9, 0.9, 0.9)
-    else
-        GameTooltip:AddLine("Nothing equipped", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine(PAIR_LABEL[btn.slotID] or slot.name or slot.key)
+    for _, id in ipairs({ btn.slotID, PAIR[btn.slotID] }) do
+        local g = self.gear[id]
+        if g and not g.empty and g.link then
+            GameTooltip:AddLine(g.link)
+            GameTooltip:AddLine(EquippedDesc(g), 0.9, 0.9, 0.9)
+        else
+            GameTooltip:AddLine("Nothing equipped", 0.7, 0.7, 0.7)
+        end
     end
-    local summary = self.slotSummary and self.slotSummary[btn.slotID]
+    if PAIR[btn.slotID] then GameTooltip:AddLine("|cff888888A drop is judged against the weaker of the two.|r") end
+    local summary = self.slotSummary and PairedSummary(self.slotSummary, btn.slotID)
     if summary then
         if #summary.wanted > 0 then
             GameTooltip:AddLine(" ")
@@ -1593,6 +1621,18 @@ function ns:ShowItemTooltip(btn)
         GameTooltip:AddLine("|cff888888Rolled already: out of this pool until it refills. Right-click: not rolled.|r")
     elseif btn.roll and btn.source then
         GameTooltip:AddLine("|cff888888Right-click: mark as rolled.|r")
+    end
+    if eval.owned then
+        local o = eval.owned
+        if o.catalyzed then
+            GameTooltip:AddLine(string.format("|cff888888You already have this, catalyzed into %s: %d %s (%s)%s|r", o.name or "a set piece", o.ilvl or 0,
+                TrackText(o.track, o.cur), o.where or "equipped", eval.reason == "owned" and "" or "; the drop would go further"))
+        elseif o.unknownLevel then
+            GameTooltip:AddLine("|cff888888You already have this (bags or bank)|r")
+        else
+            GameTooltip:AddLine(string.format("|cff888888You already have this: %d %s (%s)%s|r", o.ilvl or 0, TrackText(o.track, o.cur),
+                o.where or "?", eval.reason == "owned" and "" or "; the drop would go further"))
+        end
     end
     if self:IsCatalystCandidate(eval) then
         local p = self:SetProgress()
@@ -2032,9 +2072,37 @@ local function DropsBySlot()
     return buckets
 end
 
--- Twin slots (rings, trinkets, hands): a drop is compared against the weaker
--- one, so the other twin may list nothing.
-local TWIN = { [11] = 12, [12] = 11, [13] = 14, [14] = 13, [16] = 17, [17] = 16 }
+-- Rings and trinkets are one Gear row per pair: a drop is judged against
+-- the weaker of the two, so the pair shares one drop list. PAIR maps the
+-- row's slot to the one folded into it.
+local PAIR = { [11] = 12, [13] = 14 }
+local PAIR_LABEL = { [11] = "Rings", [13] = "Trinkets" }
+local FOLDED = {}
+for _, second in pairs(PAIR) do FOLDED[second] = true end
+ns.UI.PairSlot = PAIR
+
+-- A slot's summary, with its pair's folded in.
+local function PairedSummary(summary, id)
+    local e = summary[id] or { count = 0, wanted = {}, voidcore = {}, best = NONE, sources = {} }
+    local twin = PAIR[id] and summary[PAIR[id]]
+    if not twin then return e end
+    local m = { count = e.count + twin.count, best = math.max(e.best or NONE, twin.best or NONE), wanted = {}, voidcore = {}, sources = {} }
+    for _, part in ipairs({ e, twin }) do
+        for _, w in ipairs(part.wanted or {}) do m.wanted[#m.wanted + 1] = w end
+        for _, w in ipairs(part.voidcore or {}) do m.voidcore[#m.voidcore + 1] = w end
+        for key, src in pairs(part.sources or {}) do
+            if m.sources[key] then m.sources[key].n = m.sources[key].n + src.n else m.sources[key] = { name = src.name, n = src.n } end
+        end
+        if part.bestDrop and (not m.bestDrop or (part.bestDropScore or 0) > (m.bestDropScore or 0)) then
+            m.bestDrop, m.bestDropScore = part.bestDrop, part.bestDropScore
+        end
+    end
+    return m
+end
+
+-- Weapons: a drop is compared against the weaker hand, so the other hand
+-- may list nothing.
+local TWIN = { [16] = 17, [17] = 16 }
 
 local function RefreshGear(page)
     local self = ns
@@ -2054,12 +2122,14 @@ local function RefreshGear(page)
     local summary = self.slotSummary or {}
     local buckets = DropsBySlot()
     local order = {}
-    for i, s in ipairs(self.SLOTS) do order[i] = s end
+    for _, s in ipairs(self.SLOTS) do
+        if not FOLDED[s.id] then order[#order + 1] = s end
+    end
     if sortMode ~= "slot" then
         local index = {}
         for i, s in ipairs(self.SLOTS) do index[s.id] = i end
         table.sort(order, function(a, b)
-            local ea, eb = summary[a.id] or {}, summary[b.id] or {}
+            local ea, eb = PairedSummary(summary, a.id), PairedSummary(summary, b.id)
             local va = sortMode == "wanted" and #(ea.wanted or {}) or (ea.count or 0)
             local vb = sortMode == "wanted" and #(eb.wanted or {}) or (eb.count or 0)
             if va ~= vb then return va > vb end
@@ -2087,7 +2157,7 @@ local function RefreshGear(page)
                 ns.uiExpandedSlotID = (ns.uiExpandedSlotID ~= self2.slotID) and self2.slotID or nil
                 ns:RefreshWindow()
             end, function(self2)
-                ns:CycleSlotState(self2.slotID)
+                ns:CycleSlotState(self2.slotID, PAIR[self2.slotID])
             end, function(self2) ns:ShowSlotTooltip(self2) end)
         end)
         row.slotID = s.id
@@ -2104,7 +2174,7 @@ local function RefreshGear(page)
             row.Icon:SetDesaturated(true)
         end
         local state = self:GetSlotState(s.id)
-        local e = summary[s.id] or { count = 0, wanted = {}, voidcore = {}, best = NONE }
+        local e = PairedSummary(summary, s.id)
         if state == "skip" then
             row.Border:SetColorTexture(0.8, 0.2, 0.2, 1)
         elseif state == "want" then
@@ -2115,17 +2185,27 @@ local function RefreshGear(page)
         else
             row.Border:SetColorTexture(0, 0, 0, 1)
         end
-        local label = s.name or s.key
+        local label = PAIR_LABEL[s.id] or s.name or s.key
         if state == "skip" then label = "|cffff5555" .. label .. "|r  |cff888888skip|r"
         elseif state == "want" then label = "|cff66bbff" .. label .. "|r  |cff888888want all|r" end
-        row.Name:SetText(label .. "  " .. EquippedShort(g))
+        local worn = EquippedShort(g)
+        if PAIR[s.id] then worn = worn .. "  |cff666666·|r  " .. EquippedShort(self.gear[PAIR[s.id]]) end
+        row.Name:SetText(label .. "  " .. worn)
         local expanded = self.uiExpandedSlotID == s.id
         row.Arrow:SetRotation(expanded and 0 or math.rad(90))
         SetRowCounts(row, string.format("%s%d|r", Hex(e.count > 0 and e.best or NONE), e.count), #e.wanted, scanned, accent, #e.voidcore)
         RowBackground(row, rowIndex, expanded, false)
         y = y + ROW_H + 1
         if expanded then
-            local list = KeepOrder("items", buckets[s.id] or {}, function(entry) return entry.eval.item.itemID .. "|" .. (entry.source or "") end)
+            local drops = buckets[s.id] or {}
+            if PAIR[s.id] and buckets[PAIR[s.id]] then
+                local both = {}
+                for _, entry in ipairs(drops) do both[#both + 1] = entry end
+                for _, entry in ipairs(buckets[PAIR[s.id]]) do both[#both + 1] = entry end
+                table.sort(both, CompareDrops)
+                drops = both
+            end
+            local list = KeepOrder("items", drops, function(entry) return entry.eval.item.itemID .. "|" .. (entry.source or "") end)
             local shown = 0
             for _, entry in ipairs(list) do
                 local eval = entry.eval
@@ -2434,8 +2514,9 @@ function ns:ShowRollTooltip(row)
         GameTooltip:AddLine(string.format("Pool for %s from %s: %d of %d left%s", self:SpecName(self:GetLootSpecID()) or "your loot spec", where,
             s.count, s.total, s.tooltipRead and "  |cff888888(the game's own list)|r" or ""), 1, 1, 1)
         if s.count > 0 then
-            GameTooltip:AddLine(string.format("%d usable (%d%%), %d target%s, %d wanted", s.usable, math.floor(s.chance * 100 + 0.5),
-                s.targets, s.targets == 1 and "" or "s", s.wanted), 1, 1, 1)
+            GameTooltip:AddLine(string.format("%d usable (%d%%), %d ideal (%d%%), %d target%s, %d wanted", s.usable, math.floor(s.chance * 100 + 0.5),
+                s.ideal, math.floor(s.idealChance * 100 + 0.5), s.targets, s.targets == 1 and "" or "s", s.wanted), 1, 1, 1)
+            GameTooltip:AddLine("|cff888888Ideal: an upgrade whose stats fit too (a 75% match, better than the piece it replaces, or a weighted gain with a profile).|r", 1, 1, 1, true)
             GameTooltip:AddLine(string.format("A roll here gains |cffffffff+%.1f|r item levels on average (slot-weighted; targets and wanted items count extra).", s.ev), 0.9, 0.9, 0.9, true)
             if s.best then
                 GameTooltip:AddLine(string.format("Best in the pool: %s (+%.1f)", ItemName(s.best.token or s.best.item), s.bestValue), 0.9, 0.9, 0.9, true)
@@ -2502,7 +2583,7 @@ local function RefreshRolls(page)
         if not s.ready then
             row.Pool:SetText("|cff888888...|r"); row.Chance:SetText(""); row.EGain:SetText(""); row.Targets:SetText("")
         else
-            row.Pool:SetText(string.format("%s%d|r|cff888888/%d|r", Hex(s.usable > 0 and TRACK or NONE), s.usable, s.count))
+            row.Pool:SetText(string.format("%s%d|r|cff888888/%d|r", Hex(s.ideal > 0 and TRACK or (s.usable > 0 and ILVL or NONE)), s.ideal, s.usable))
             row.Chance:SetText(s.count > 0 and string.format("|cffffffff%d%%|r", math.floor(s.chance * 100 + 0.5)) or "|cff444444-|r")
             row.EGain:SetText(s.ev > 0 and string.format("%s+%.1f|r", Hex(TRACK), s.ev) or "|cff444444-|r")
             row.Targets:SetText(s.targets > 0 and (ns.VC_HEX .. s.targets .. "|r") or "|cff444444-|r")
