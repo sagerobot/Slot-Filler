@@ -15,6 +15,19 @@ It docks a window to the left of the Dungeons & Raids window with five tabs:
   drop for it, from dungeons, raid bosses or both, is listed, best stat fit
   first, each with where it comes from and a star. That is where you compare
   same-slot drops and pick the one to want.
+- **Voidcore** ranks where to spend a Nebulous Voidcore. A pool is what a
+  roll can still give your loot spec from a source at a difficulty: the
+  loot table less the rolls you have received, which are recorded as they
+  happen (right-click an item to mark one by hand). The game's own list,
+  in each Voidcache's tooltip, is read whenever the client fills it in
+  (with the Adventure Guide or a roll prompt open) and corrects the record.
+  The tab shows how much of each pool would be an upgrade, weighs Voidcore
+  targets and wanted items highest, and opens a row into the pool with each
+  roll's verdict. Sources are ranked by the item levels a roll gains on
+  average, slot-weighted. The roll window itself gets a line with the
+  same odds. Set pieces worn, the next set bonus and Catalyst charges show
+  on the Gear and Voidcore tabs; a tier-slot drop's tooltip says the
+  Catalyst can make it a set piece.
 - **IO** shows your Mythic+ rating and plans the timed keys that reach a
   target (2000, 2500, 3000 or a custom number). Several plans are offered,
   from the fewest runs at higher keys to the most runs at the lowest keys;
@@ -38,10 +51,10 @@ one upgrade track above the difficulty (Normal: Hero 1/6, Heroic: Myth 1/6,
 Mythic: fully upgraded Myth), so a Heroic boss roll and a +10 dungeon roll
 are worth the same Myth 1/6 item.
 
-Premade Groups listings get a badge with the upgrade count (and a star when
-a wanted item drops there) plus the rating a timed run there would add, and
-Mythic Keystone tooltips (your key in the bags, keystone links in chat) get
-the same lines at that key's own level.
+Premade Groups listings get a line under each group: its upgrade drops for
+you, wanted items and Voidcore targets that drop there. Mythic Keystone
+tooltips (your key in the bags, keystone links in chat) get the upgrade
+lines at that key's own level, plus the rating a timed run would add.
 
 ## What it does automatically
 
@@ -117,6 +130,10 @@ the same lines at that key's own level.
 - **Items**: right-click a drop to exclude it (a bad trinket, or something you
   already received from a Voidcore, since those leave the roll pool).
 - **Sorting**: click a column header (Dungeon or Boss, Drops, Wanted).
+- **Settings**: the cog in the title bar; click it again to come back.
+- **Voidcore tab**: pools follow your loot spec; dungeons at the selected
+  key, bosses at the Raid tab's difficulty. Re-read asks the game's own
+  lists again (they fill in while the Adventure Guide is open).
 - **Rating target** (IO tab): 2000 / 2500 / 3000, or Custom with a stepper
   in steps of 50. Starts at the next milestone above your rating.
 - **Runs** (IO tab): the plans that reach the target, one tab per number of
@@ -242,7 +259,8 @@ lua tests/harness.lua
 | `Rating.lua` | Mythic+ rating per dungeon, timed-score model, run plans towards a target |
 | `Loot.lua` | Adventure Guide loot scanner (dungeons, raid bosses per difficulty) and cache |
 | `Evaluate.lua` | Upgrade classification (drop, and the Voidcore roll for tooltips), dungeon and boss ranking |
-| `UI.lua` | Main window (Dungeons, Raid, Gear and IO tabs), docking (neighbour-aware) and Group Finder push |
+| `Voidcore.lua` | Bonus roll pools from the Voidcache tooltips, source ranking, the roll window line |
+| `UI.lua` | Main window (Dungeons, Raid, Gear, IO and Voidcore tabs), docking (neighbour-aware) and Group Finder push |
 | `Options.lua` | Settings tab and the Settings > AddOns entry |
 | `LFGHook.lua` | Premade Groups badges and tooltip lines |
 

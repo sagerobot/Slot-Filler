@@ -349,13 +349,13 @@ function ns:BuildSettingsPage(page)
     end)
 
     Header("Group Finder & keystones")
-    AddCheck("Upgrade badge on group listings", "Show the number of upgrade drops next to each group in the Premade Groups search results, with a star when a wanted item drops there.", "lfgBadges")
+    AddCheck("Upgrade badge on group listings", "A line under each group in the Premade Groups search results: how many upgrade drops the dungeon has for you, wanted items and Voidcore targets that drop there.", "lfgBadges")
     AddCheck("Upgrade lines in group tooltips", nil, "lfgTooltip")
     AddCheck("Upgrade lines on keystone tooltips",
         "Show the same lines on Mythic Keystone tooltips: your keystone in the bags and keystone links in chat, evaluated at that key's level.",
         "keystoneTooltip")
-    AddCheck("Rating gain on group listings and keystones",
-        "The rating a timed run would add, from the IO tab's plan, next to each group listing and on keystone tooltips at that key's level.",
+    AddCheck("Rating gain on keystone tooltips",
+        "The rating a timed run would add, on your keystone's tooltip and on keystone links in chat, at that key's level.",
         "ioBadge")
 
     Header("Upgrade tracks")

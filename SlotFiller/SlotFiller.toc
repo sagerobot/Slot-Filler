@@ -20,6 +20,7 @@ Season.lua
 Rating.lua
 Loot.lua
 Evaluate.lua
+Voidcore.lua
 UI.lua
 Options.lua
 LFGHook.lua

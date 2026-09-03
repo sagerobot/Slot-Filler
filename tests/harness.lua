@@ -297,6 +297,48 @@ _G.C_TooltipInfo = {
         return { lines = { { leftText = "Some Item" }, { leftText = "Item Level " .. ilvl }, { leftText = string.format("Upgrade Level: %s %d/6", track, st) } } }
     end,
 }
+-- Nebulous Voidcache tooltips: what a bonus roll can still give (the pool)
+_G.VOIDCACHE_TIPS = {
+    [278289] = { "- |cffa335eeChest of Testing|r", "\226\128\147\194\160Venomcast Idol", "  -  Ring of Haste" }, -- the Twin Fangs: legs token rolled already, no Curio (en dash and no-break space too)
+    [279623] = { "- Crown of Testing", "- Trinket of Testing" },                          -- Murder Row: the sword rolled already
+    [279619] = { "Small Sword", "Shield of Testing" },                                    -- the Blinding Vale: no markers at all, only the header
+}
+_G.VOIDCACHE_LOADING = { [279619] = 2 }  -- two reads list nothing before the client has it
+_G.VOIDCACHE_NEEDS_JOURNAL = { [278289] = 3002, [279623] = 1304 } -- listed only once the journal loot was asked for
+_G.JOURNAL_TOUCHED = {}
+-- a cache the client resolves later: every read gets a data instance id, the
+-- list is there only on the read made after TOOLTIP_DATA_UPDATE for that id
+_G.VOIDCACHE_ASYNC = { [279621] = { "- Kings' Ring" } }
+_G.VOIDCACHE_INSTANCE, _G.VOIDCACHE_RESOLVED_FOR = 0, nil
+C_TooltipInfo.GetItemByID = function(id, quality, context, level)
+    _G.VOIDCACHE_READS = (VOIDCACHE_READS or 0) + 1
+    _G.LAST_VOIDCACHE_ARGS = { id, context, level }
+    local need = VOIDCACHE_NEEDS_JOURNAL[id]
+    if need and not JOURNAL_TOUCHED[need] then return { lines = { { leftText = "Nebulous Voidcache" }, { leftText = "Binds when picked up" } } } end
+    local left = VOIDCACHE_LOADING[id]
+    if left and left > 0 then
+        VOIDCACHE_LOADING[id] = left - 1
+        return { lines = { { leftText = "Nebulous Voidcache" } } }
+    end
+    local items = VOIDCACHE_TIPS[id]
+    if VOIDCACHE_ASYNC[id] then
+        if VOIDCACHE_RESOLVED_FOR == id then
+            VOIDCACHE_RESOLVED_FOR = nil
+            items = VOIDCACHE_ASYNC[id]
+        else
+            VOIDCACHE_INSTANCE = VOIDCACHE_INSTANCE + 1
+            _G.LAST_VOIDCACHE_INSTANCE = VOIDCACHE_INSTANCE
+            return { dataInstanceID = VOIDCACHE_INSTANCE, lines = { { leftText = "Nebulous Voidcache: Kings' Rest" }, { leftText = "Binds when picked up" } } }
+        end
+    end
+    if not items then return nil end
+    local lines = { { leftText = "Nebulous Voidcache: Somewhere" }, { leftText = "Item Level 318" }, { leftText = "Binds when picked up" },
+        { leftText = "Use: Transmute a Nebulous Voidcore into a piece of equipment for your Loot Specialization." },
+        { leftText = " " }, { leftText = "Contains one of the following items:" } }
+    for _, t in ipairs(items) do lines[#lines + 1] = { leftText = t } end
+    return { lines = lines }
+end
+_G.C_CurrencyInfo = { GetCurrencyInfo = function(id) if id == 3418 then return { quantity = 2 } elseif id == 3465 then return { quantity = 1 } end return nil end }
 _G.C_Container = { GetContainerNumSlots = function() return 0 end, GetContainerItemLink = function() return nil end }
 
 -- Free upgrade levels (Midnight): WATERMARKS[redundancySlot] = ilvl; nil = the client reports nothing
@@ -444,6 +486,7 @@ end
 _G.EJ_SetLootFilter = function(c, s) ej.classID, ej.specID = c, s end
 _G.EJ_GetLootFilter = function() return ej.classID, ej.specID end
 _G.EJ_GetNumLoot = function()
+    JOURNAL_TOUCHED[ej.encounter or ej.instance] = ej.diff
     if ej.encounter then return RAID_LOOT[ej.encounter] and #RAID_LOOT[ej.encounter] or 0 end
     return LOOT[ej.instance] and #LOOT[ej.instance] or 0
 end
@@ -490,8 +533,9 @@ _G.C_LFGList = {
     end,
     GetActivityGroupInfo = function() return nil end,
     GetSearchResultInfo = function(resultID)
-        if resultID == 1 then return { activityIDs = { 1749 }, leaderName = "x" } end
-        if resultID == 2 then return { activityIDs = { 9999 }, leaderName = "y" } end
+        if resultID == 1 then return { activityIDs = { 1749 }, leaderName = "x", name = "+13 chill run" } end
+        if resultID == 2 then return { activityIDs = { 9999 }, leaderName = "y", name = "LF healer" } end
+        if resultID == 3 then return { activityIDs = { 1699 }, leaderName = "z", name = "11 key, timed pls" } end
         return nil
     end,
 }
@@ -504,7 +548,7 @@ LFGListFrame.SearchPanel.ScrollBox = NewWidget("Frame")
 -- Load the addon
 -------------------------------------------------------------------------------
 local ns = {}
-local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Rating.lua", "Loot.lua", "Evaluate.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
+local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Rating.lua", "Loot.lua", "Evaluate.lua", "Voidcore.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
 for _, f in ipairs(files) do
     local chunk, err = loadfile(ADDON_DIR .. f)
     assert(chunk, err)
@@ -1284,6 +1328,150 @@ check(shownPiece.VC:IsShown() and legsRow.VC:IsShown(), "slot token rows keep th
 local curioRow2
 for _, it in ipairs(ns.UI.Pools.raidItems) do if it:IsShown() and it.eval and it.eval.token and it.eval.token.itemID == 270909 then curioRow2 = it end end
 check(curioRow2 and not curioRow2.VC:IsShown(), "the Curio row has no Voidcore star")
+
+-- Voidcore: the roll pools read from the Voidcache tooltips
+do
+ns:ClearVoidcorePools()
+local ejTierBefore = ej.tier
+local vcSources = ns:VoidcoreSources()
+check(#vcSources > 0 and not vcSources[1].tooltipRead and vcSources[1].ready and vcSources[1].count > 0, "pools come from the loot table at once; the game's lists are queued")
+RunTimers()
+vcSources = ns:VoidcoreSources()
+local vcByName = {}
+for _, src in ipairs(vcSources) do vcByName[src.name] = src end
+local twinS, mrS, bvS, krS = vcByName["The Twin Fangs"], vcByName["Murder Row"], vcByName["The Blinding Vale"], vcByName["Kings' Rest"]
+check(twinS and twinS.ready and twinS.count == 3 and twinS.context == 6 and twinS.kind == "boss", "the Twin Fangs' Mythic pool holds three items (dash, en dash and spaced markers)")
+check(JOURNAL_TOUCHED[3002] == 16 and JOURNAL_TOUCHED[1304] == 8 and ej.tier == ejTierBefore, "each source's journal loot was asked for at its difficulty, the journal's tier put back")
+check(ns.VoidcacheListedName("Item Level 318") == nil and ns.VoidcacheListedName("Contains one of the following items:") == nil, "header lines are not items")
+local inPool = {}
+for _, e in ipairs(twinS.items) do inPool[(e.token or e.item).itemID] = true end
+check(inPool[1008] and inPool[1009] and inPool[270912] and not inPool[1010] and not inPool[270909], "pool items matched by name, the token by its token name; the rolled token and the Curio absent")
+check(twinS.usable == 3 and twinS.chance == 1 and twinS.targets == (ns:IsVoidcoreTarget(1008) and 1 or 0), "every pool item would be a Myth roll upgrade (" .. twinS.usable .. "/" .. twinS.count .. ")")
+check(twinS.ev > 0 and twinS.best and twinS.bestValue >= twinS.ev and twinS.value / twinS.count == twinS.ev and twinS.bestValue <= 30 * 1.25 * 3,
+    "the expected gain is the mean roll value, empty slots capped; the best item is named (" .. tostring(twinS.best and twinS.best.item.name) .. " +" .. twinS.bestValue .. ")")
+local ringEval, chestEval
+for _, e in ipairs(twinS.items) do if e.item.itemID == 1009 then ringEval = e elseif e.item.itemID == 1008 then chestEval = e end end
+local ringValue = ns.RollValue(ns, ringEval)
+check(ringValue > 0 and ringEval.rollValue == ringValue and math.min(30, ringEval.voidcore.potentialGain or 0) * 0.75 * (ns:IsVoidcoreTarget(1009) and 3 or 1) == ringValue,
+    "a ring's roll value is its fully upgraded gain (capped) at the ring budget (" .. ringValue .. ")")
+ns:SetVoidcoreTarget(1009, true)
+local targeted = ns.RollValue(ns, ringEval)
+check(targeted == ringValue * 3, "a Voidcore target counts three times")
+ns:SetVoidcoreTarget(1009, false)
+local sp = ns:SetProgress()
+check(sp.known and sp.total == 5 and sp.worn == 0 and sp.nextBonus == 2 and sp.need == 2 and sp.charges == 1, "set progress: none of the five worn, the 2-piece needs 2, one Catalyst charge")
+check(ns:IsCatalystCandidate(chestEval) and not ns:IsCatalystCandidate(ringEval), "a chest is a Catalyst candidate, a ring is not")
+local oldHead = ns.gear[1].itemID
+ns.gear[1].itemID = 7001
+check(ns:SetProgress().worn == 1 and ns:SetProgressText() == "Set 1/5, 2-piece needs 1, 1 Catalyst charge", "a worn set piece counts (" .. tostring(ns:SetProgressText()) .. ")")
+ns.gear[1].itemID = oldHead
+check(mrS and mrS.ready and mrS.count == 2 and mrS.context == 16 and mrS.level == ns.db.targetKey, "Murder Row read at the selected key (+" .. tostring(mrS and mrS.level) .. "), two items left")
+local mrPool = {}
+for _, e in ipairs(mrS.items) do mrPool[e.item.itemID] = true end
+check(mrPool[1001] and mrPool[1002] and not mrPool[1003], "the rolled sword is out of the dungeon's pool")
+check(bvS and bvS.ready and bvS.count == 2 and VOIDCACHE_LOADING[279619] == 0, "read again until the client lists it twice alike: the Blinding Vale holds two (lines after the header, no markers)")
+check(vcSources[1].ev >= vcSources[2].ev and (vcSources[#vcSources].missing or vcSources[#vcSources].ready), "sources ordered by the expected value of a roll, unknown caches last")
+check(krS and krS.ready and krS.gaveUp and not krS.tooltipRead and krS.count == 2, "a cache the client never lists stays on the loot table (Kings' Rest: 2 items)")
+-- the client says the last read resolved: read again at once, the list is there
+_G.VOIDCACHE_RESOLVED_FOR = 279621
+ev(ns.eventFrame, "TOOLTIP_DATA_UPDATE", LAST_VOIDCACHE_INSTANCE)
+krS = nil
+for _, src in ipairs(ns:VoidcoreSources()) do if src.name == "Kings' Rest" then krS = src end end
+check(krS and krS.tooltipRead and not krS.gaveUp and krS.pool.resolved == 1 and krS.count == 1 and #krS.items == 0 and ns:IsRolled(krS, 1008) and ns:IsRolled(krS, 1005),
+    "a data update fetches the game's list at once; loot it no longer names is recorded as rolled (Kings' Rest)")
+-- a loot-table pool: marks by hand, and a refill once everything is rolled
+local nymS
+for _, src in ipairs(ns:VoidcoreSources()) do if src.name == "Nymrissa Wavecaller" then nymS = src end end
+check(nymS and not nymS.tooltipRead and nymS.count == 2 and nymS.total == 2, "the lair's pool comes from the loot table: two items")
+ns:ToggleRolled(nymS, 1003)
+for _, src in ipairs(ns:VoidcoreSources()) do if src.name == "Nymrissa Wavecaller" then nymS = src end end
+check(nymS.count == 1 and #nymS.rolledItems == 1 and ns:IsRolled(nymS, 1003) and ns.cdb.rolled[ns:GetLootSpecID()]["b3010:mythic"][1003], "marking the sword rolled takes it out, per spec and pool")
+ns:ToggleRolled(nymS, 1002)
+for _, src in ipairs(ns:VoidcoreSources()) do if src.name == "Nymrissa Wavecaller" then nymS = src end end
+check(nymS.count == 2 and nymS.refilled and not ns:IsRolled(nymS, 1003), "with everything rolled the pool refills")
+-- a roll result records its item against the prompt's source
+_G.GetSpellConfirmationPromptsInfo = function() return { { displayItemID = 274708, itemContext = 5, treasureContextLevel = 0 } } end
+ns:NoteRollPrompt()
+_G.GetSpellConfirmationPromptsInfo = nil
+ev(ns.eventFrame, "BONUS_ROLL_RESULT", "item", "|cffa335ee|Hitem:1002::::::::80:72::::::|h[Trinket of Testing]|h|r", 1, 72)
+RunTimers()
+local nymH = ns:VoidcoreSourceFor(274708, 5, nil)
+check(nymH and nymH.diffKey == "heroic" and ns:IsRolled(nymH, 1002) and nymH.count == 1, "a roll result takes its item out of the prompted source's pool (Heroic lair)")
+ns:SetRolled(nymH, 1002, false)
+ev(ns.eventFrame, "TOOLTIP_DATA_UPDATE", 99999)
+RunTimers()
+ns:VoidcoreSources(); RunTimers()
+local readsNow = VOIDCACHE_READS
+ns:VoidcoreSources()
+RunTimers()
+check(VOIDCACHE_READS == readsNow, "ready pools are not read again")
+ns:RetryEmptyVoidcorePools()
+ns:VoidcoreSources()
+check(ns.voidcorePools["279623:16:" .. ns.db.targetKey].ready and not ns.voidcorePools["279621:16:" .. ns.db.targetKey].ready, "opening the tab keeps the lists that were read and asks again for the ones that never came")
+RunTimers()
+check(ns:VoidcoreSummary(twinS) == string.format("3 of 3 usable (100%%), +%.1f per roll", twinS.ev) .. (twinS.targets > 0 and ", 1 target" or ""), "summary line (" .. tostring(ns:VoidcoreSummary(twinS)) .. ")")
+ns:VoidcoreSourceFor(278289, 5, nil); RunTimers()
+local hs = ns:VoidcoreSourceFor(278289, 5, nil)
+check(hs and hs.diffKey == "heroic" and hs.count == 3 and hs.result.ctx.difficulty == "heroic", "a cache at another difficulty is evaluated at that difficulty")
+ns:VoidcoreSourceFor(279623, 16, 8); RunTimers()
+local ds = ns:VoidcoreSourceFor(279623, 16, 8)
+check(ds and ds.kind == "dungeon" and ds.key == 8 and ds.ready and ds.count == 2, "a dungeon cache is read at the roll's key level (+8)")
+_G.GetSpellConfirmationPromptsInfo = function() return { { displayItemID = 278289, itemContext = 5, treasureContextLevel = 0 } } end
+local rollText = ns:RollWindowText()
+check(rollText and rollText:find("^The Twin Fangs: 3 of 3 usable"), "the roll window line names the source and its odds (" .. tostring(rollText) .. ")")
+_G.GetSpellConfirmationPromptsInfo = nil
+ev(ns.eventFrame, "BONUS_ROLL_RESULT", "item", "|Hitem:1009|h", 1, 72)
+RunTimers()
+check(next(ns.voidcorePools) == nil, "a roll clears the pools so they are read again")
+-- the tab
+ns:ShowPage("voidcore")
+local vcPage = SlotFillerFrame.Pages.voidcore
+check(ns:CurrentPage() == "voidcore" and SlotFillerFrame.Toolbar:IsShown() and vcPage.Strip.Text:GetText():find("2 Voidcores", 1, true), "Voidcore tab shown with the toolbar and the Voidcore count")
+for _ = 1, 6 do RunTimers(); ns:RefreshWindow() end
+local firstRow = ns.UI.Pools.rollRows[1]
+check(firstRow and firstRow.source and firstRow.source.name == ns:VoidcoreSources()[1].name and firstRow.Pool:GetText():find("/", 1, true) and firstRow.EGain:GetText():find("+", 1, true),
+    "rows in the ranked order with usable/pool and the expected gain")
+check(vcPage.Strip.Text:GetText():find("Set 0/5", 1, true) and vcPage.Strip.Text:GetText():find("1 Catalyst charge", 1, true), "the strip shows set progress and Catalyst charges")
+local twinRow
+for _, r in ipairs(ns.UI.Pools.rollRows) do if r:IsShown() and r.source and r.source.name == "The Twin Fangs" then twinRow = r end end
+twinRow:GetScript("OnClick")(twinRow, "LeftButton")
+local shownItems = 0
+for _, it in ipairs(ns.UI.Pools.rollItems) do if it:IsShown() and it.eval then shownItems = shownItems + 1 end end
+local rolledRows = 0
+for _, it in ipairs(ns.UI.Pools.rollItems) do if it:IsShown() and it.eval and it.Gain:GetText() == "|cff888888rolled|r" then rolledRows = rolledRows + 1 end end
+check(ns.uiExpandedRollKey == 278289 and shownItems == 4 and rolledRows == 1 and ns.UI.Pools.rollItems[1].Gain:GetText():find("|cff", 1, true),
+    "clicking a source lists its pool with the roll verdicts, the rolled legs token dimmed below")
+local tipLinks2, tipLines2 = {}, {}
+GameTooltip.SetHyperlink = function(_, l) tipLinks2[#tipLinks2 + 1] = l end
+GameTooltip.AddLine = function(_, t) tipLines2[#tipLines2 + 1] = tostring(t) end
+local ringRow
+for _, it in ipairs(ns.UI.Pools.rollItems) do if it:IsShown() and it.eval and it.eval.item.itemID == 1009 then ringRow = it end end
+ns:ShowItemTooltip(ringRow)
+local rollShown, rollVerdict = false, false
+for _, l in ipairs(tipLines2) do
+    if l:find("Shown as a Voidcore roll", 1, true) then rollShown = true end
+    if l:find("Voidcore roll|r:", 1, true) then rollVerdict = true end
+end
+check(ringRow.roll and rollShown and rollVerdict and BonusOfLink(tipLinks2[1]) == BonusFor(5, 6), "a pool item's tooltip shows the item as the Myth 6/6 roll, with the roll's verdict (" .. tostring(tipLinks2[1]) .. ")")
+local chestRow
+for _, it in ipairs(ns.UI.Pools.rollItems) do if it:IsShown() and it.eval and it.eval.item.itemID == 1008 then chestRow = it end end
+tipLines2 = {}
+ns:ShowItemTooltip(chestRow)
+local catalystLine = false
+for _, l in ipairs(tipLines2) do if l:find("Catalyst: can become a set piece", 1, true) and l:find("1 charge", 1, true) then catalystLine = true end end
+check(catalystLine, "a tier-slot item's tooltip says the Catalyst can make it a set piece, with the charges")
+GameTooltip.SetHyperlink, GameTooltip.AddLine = nil, nil
+check(SlotFillerFrame.SettingsButton ~= nil, "the settings cog sits in the title bar")
+ns:ToggleOptionsPanel()
+check(ns:CurrentPage() == "settings", "the cog opens Settings")
+ns:ToggleOptionsPanel()
+check(ns:CurrentPage() == "voidcore", "and again returns to the Voidcore tab")
+ns:PrintVoidcoreDiagnostics()
+ns.uiExpandedRollKey = nil
+ns:ShowPage("raid")
+ns.uiExpandedEncounterID = 3002
+ns:RefreshWindow()
+end
 -- the token row's tooltip is the token's own; the piece row's is the piece
 local tipLinks, tipLines = {}, {}
 GameTooltip.SetHyperlink = function(_, l) tipLinks[#tipLinks + 1] = l end
@@ -1413,11 +1601,7 @@ check(g1.Name:GetText():find("Vale  |cff", 1, true) and g1.Name:GetText():find("
 check(ioPage.Strip.Note:GetText() ~= "", "the strip explains the count")
 ns:SetRatingOrder("rating")
 check(ns.UI.Pools.ioRows[1].mapID == 249 and ioPage.Strip.Note:GetText() == "", "back to rating order: highest key first, no note")
--- rating on group listings and keystones
-local part, plevel, pgain, planned = ns.RatingPartForDungeon(ns.dungeonByMapID[584])
-check(part and part:find("+35", 1, true) and plevel == 11 and planned, "listing badge: planned run gain")
-part, plevel, pgain, planned = ns.RatingPartForDungeon(ns.dungeonByMapID[587])
-check(part and part:find("+9", 1, true) and plevel == 11 and not planned, "listing badge: grey gain at the first key that gains")
+-- rating on keystone tooltips
 local kt3 = { lines = {}, AddLine = function(self, text) table.insert(self.lines, text) end, Show = function() end }
 ns:AddKeystoneTooltip(kt3, 587, 12)
 check(kt3.lines[#kt3.lines]:find("Rating: 326 -> 365 (+39) if timed", 1, true) ~= nil, "keystone tooltip: rating if timed (" .. tostring(kt3.lines[#kt3.lines]) .. ")")
@@ -1427,7 +1611,7 @@ check(kt4.lines[#kt4.lines]:find("no gain at +9", 1, true) ~= nil, "keystone too
 ns.db.ioBadge = false
 local kt5 = { lines = {}, AddLine = function(self, text) table.insert(self.lines, text) end, Show = function() end }
 ns:AddKeystoneTooltip(kt5, 587, 12)
-check(not kt5.lines[#kt5.lines]:find("Rating:", 1, true) and ns.RatingPartForDungeon(ns.dungeonByMapID[584]) == nil, "rating lines and badges off with the setting")
+check(not kt5.lines[#kt5.lines]:find("Rating:", 1, true), "rating lines off with the setting")
 ns.db.ioBadge = true
 ns:SetRatingTarget(nil)
 check(ioPage.Head.TargetTabs.selectedTabID == "2000" and not ioPage.Head.TargetPlus:IsShown(), "automatic target: milestone tab, no stepper")
@@ -1451,7 +1635,7 @@ check(ns:GetStatPriority()[1] == after[1], "the leftmost stat cannot move furthe
 ns:SetStatPriority(nil)
 ns:SetStatMode("auto")
 ns:ToggleOptionsPanel()
-check(ns:CurrentPage() == "dungeons" and SlotFillerFrame.Toolbar:IsShown(), "back to Dungeons with the toolbar")
+check(ns:CurrentPage() == "io" and not SlotFillerFrame.Toolbar:IsShown(), "the cog again: back to the IO tab it came from (" .. ns:CurrentPage() .. ")")
 ns:HideWindow(true)
 check(not ns:IsWindowShown(), "window hidden")
 

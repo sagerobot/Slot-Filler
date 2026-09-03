@@ -606,6 +606,52 @@ local function RestoreJournalState(state)
     if state.classID and EJ_SetLootFilter then EJ_SetLootFilter(state.classID, state.specID or 0) end
 end
 
+-- Ask the journal for one source's loot without keeping the answer: the
+-- client builds a Voidcache tooltip's item list from it, and after a login
+-- the cached loot means nothing has asked. Nothing while the journal is
+-- open or in combat; the journal's state is saved and restored around it.
+-- Returns asked, the number of loot entries the journal lists right now
+-- (0 until its answer arrives), and whether they were still incomplete.
+-- With `keep`, the journal is left on the source (a boss's loot arrives
+-- only while it stays selected); RestoreJournalAfterTouch puts it back.
+local touchState
+function ns:RestoreJournalAfterTouch()
+    if touchState and not (EncounterJournal and EncounterJournal:IsShown()) then
+        RestoreJournalState(touchState)
+        touchState = nil
+    end
+end
+
+function ns:TouchJournalLoot(source, keep)
+    if not source or not (EJ_GetNumLoot and EJ_SelectInstance and C_EncounterJournal) then return false, 0, "no api" end
+    if EncounterJournal and EncounterJournal:IsShown() then return false, 0, "journal open" end
+    if InCombatLockdown() then return false, 0, "combat" end
+    EnsureJournalLoaded()
+    local state = touchState or SaveJournalState()
+    if keep then touchState = state end
+    local classID, specID = self.playerClassID, self:GetEvalSpecID()
+    local asked, n, incomplete, why = false, 0, nil, "no source"
+    if source.kind == "dungeon" and source.dungeon then
+        local journalID = self:JournalInstanceFor(source.dungeon)
+        if journalID then
+            local _, inc, count = ReadInstanceLoot(journalID, classID, specID)
+            asked, n, incomplete, why = true, count or 0, inc, nil
+        else
+            why = "no journal instance"
+        end
+    elseif source.kind == "boss" and source.raid and source.boss then
+        local diffID = source.raid.difficulties and source.raid.difficulties[source.diffKey]
+        if diffID then
+            local _, inc, count = ReadEncounterLoot(source.raid, source.boss, diffID, classID, specID)
+            asked, n, incomplete, why = true, count or 0, inc, nil
+        else
+            why = "no difficulty id"
+        end
+    end
+    if not keep then RestoreJournalState(state) end
+    return asked, n, incomplete and "incomplete" or why
+end
+
 local function FinishScan(aborted)
     if not scan then return end
     local s = scan

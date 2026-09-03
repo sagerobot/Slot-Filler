@@ -58,6 +58,31 @@ ns.SEASON_DATA_LATEST = {
         [270918] = "INVTYPE_LEGS", [270919] = "INVTYPE_LEGS", [270920] = "INVTYPE_LEGS", [270921] = "INVTYPE_LEGS",             -- Relic, Sszorak
         [270914] = "INVTYPE_HEAD", [270915] = "INVTYPE_HEAD", [270916] = "INVTYPE_HEAD", [270917] = "INVTYPE_HEAD",             -- Effigy, The Twin Fangs
     },
+    -- Nebulous Voidcache items, one per dungeon (by challenge map id) and
+    -- per raid boss (by name): their tooltips list what a bonus roll can
+    -- still give the current loot spec. IDs from VoidcoreAdvisor
+    -- (github.com/rolferik12/VoidcoreAdvisor, 2026-09-03).
+    -- Catalyst charges: Venomblight Manaflux (wowhead currency 3465). A
+    -- conversion keeps the item's stats and adds the set bonus.
+    catalystCurrency = 3465,
+    voidcache = {
+        currency = 3418,    -- Nebulous Voidcore
+        dungeons = {
+            [588] = 279618, -- Altar of Fangs
+            [584] = 279619, -- The Blinding Vale
+            [586] = 279620, -- Den of Nalorakk
+            [249] = 279621, -- Kings' Rest
+            [399] = 279622, -- Ruby Life Pools
+            [587] = 279623, -- Murder Row
+            [250] = 279624, -- Temple of Sethraliss
+            [585] = 279625, -- Voidscar Arena
+        },
+        bosses = {
+            ["nekzali the soulcoiler"] = 278285, ["entombed sentinels"] = 278283, ["the lost explorers"] = 278286,
+            ["vashnik the malignant"] = 278287, ["sszorak"] = 278288, ["the twin fangs"] = 278289,
+            ["the coiled altar"] = 278290, ["ulatek"] = 278284, ["nymrissa wavecaller"] = 274708,
+        },
+    },
     -- Mythic+ rating for a timed run: base at +2, per level, an extra bonus at
     -- each affix breakpoint, and up to timerBonus for finishing timerWindow
     -- (40%) under the timer. Sources: Mr. Mythical / misti calculators (2026-09).

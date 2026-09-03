@@ -27,61 +27,77 @@ local function DungeonForResult(resultID)
 end
 ns.DungeonForResult = DungeonForResult
 
+-- A listing's title ("+13 ...") is a protected string: the screen can
+-- draw it, no addon can read it. So nothing about rating is shown on a
+-- listing; keystone tooltips, which know their level, carry it.
+
 local function EnsureBadge(button)
     if button.SlotFillerBadge then return button.SlotFillerBadge end
     local badge = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     ns.Style.Font(badge)
-    local anchor = button.DataDisplay or button
-    if button.DataDisplay then
-        badge:SetPoint("RIGHT", anchor, "LEFT", -2, 0)
+    -- the third line of an entry, after the Relaxed / Competitive tag (the
+    -- activity line is too crowded: the name runs under the role icons)
+    if button.Playstyle then
+        badge:SetPoint("LEFT", button.Playstyle, "RIGHT", 6, 0)
+        badge:SetPoint("RIGHT", button, "RIGHT", -6, 0)
+    elseif button.ActivityName then
+        badge:SetPoint("TOPLEFT", button.ActivityName, "BOTTOMLEFT", 0, -1)
+        badge:SetPoint("RIGHT", button, "RIGHT", -6, 0)
+    elseif button.DataDisplay then
+        badge:SetPoint("RIGHT", button.DataDisplay, "LEFT", -2, 0)
     else
-        badge:SetPoint("RIGHT", anchor, "RIGHT", -100, 0)
+        badge:SetPoint("RIGHT", button, "RIGHT", -100, 0)
     end
+    badge:SetJustifyH("LEFT")
+    badge:SetWordWrap(false)
+    if badge.SetMaxLines then badge:SetMaxLines(1) end
     button.SlotFillerBadge = badge
     return badge
 end
 
--- Rating gain for a dungeon: text, level, gain, planned. The planned run when
--- the dungeon is in the selected plan (accent), else the first key that
--- gains anything (grey). Nothing while the data is missing or the target is met.
-local function RatingPart(d)
-    if not ns.db.ioBadge or not ns:RatingsReady() then return nil end
-    local plan, info = ns:SelectedRatingPlan()
-    if info and info.reached then return nil end
-    local mapID = d.challengeMapID
-    local run = plan and plan.byMap[mapID]
-    if run then
-        return string.format("%s+%d|r", ns.Style.AccentHex(), ns:Round(run.gain)), run.level, run.gain, true
+-- Inline icons for the badge: the wanted star and the Voidcore currency.
+local starMarkup, coreMarkup
+local function Icons()
+    if starMarkup == nil then
+        local atlas = ns.Style.FindAtlas({ "auctionhouse-icon-favorite", "PetJournal-FavoritesIcon" })
+        starMarkup = atlas and string.format("|A:%s:0:0|a", atlas) or false
     end
-    local e = ns:DungeonRating(mapID)
-    if not e.floor then return nil end
-    local gain = ns:RatingGain(mapID, e.floor)
-    return string.format("|cff888888+%d|r", ns:Round(gain)), e.floor, gain, false
+    if coreMarkup == nil then
+        coreMarkup = false
+        local id = ns:VoidcoreCurrencyID()
+        if id and C_CurrencyInfo and C_CurrencyInfo.GetCurrencyInfo then
+            local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, id)
+            local icon = ok and type(info) == "table" and info.iconFileID
+            if type(icon) == "number" and not ns.issecret(icon) then coreMarkup = string.format("|T%d:12:12|t", icon) end
+        end
+    end
+    return starMarkup, coreMarkup
 end
-ns.RatingPartForDungeon = RatingPart
 
 local function UpdateButton(button)
     if not ns.db then return end
     local d = DungeonForResult(button.resultID)
-    local text
+    -- "2 upgrades · [star]1 · [core]1", each part in its own colour, on
+    -- the entry's third line, clipped at its edge
+    local parts = {}
     if ns.db.lfgBadges then
         local r = d and ns:ResultForDungeon(d)
         if r and r.scanned then
+            local star, core = Icons()
             if r.upgrades > 0 then
-                text = string.format("%s%d^|r", HexFor(r), r.upgrades)
+                parts[#parts + 1] = string.format("%s%d upgrade%s|r", HexFor(r), r.upgrades, r.upgrades == 1 and "" or "s")
             else
-                text = "|cff666666-|r"
+                parts[#parts + 1] = "|cff666666no upgrades|r"
             end
             if r.wanted and r.wanted > 0 then
-                text = text .. ns.Style.AccentHex() .. "*|r"
+                parts[#parts + 1] = string.format("%s%s%d|r", ns.Style.AccentHex(), star or "wanted ", r.wanted)
             end
             if r.voidcore and r.voidcore > 0 then
-                text = text .. ns.VC_HEX .. "*|r"
+                parts[#parts + 1] = string.format("%s%s%d|r", ns.VC_HEX, core or "Voidcore ", r.voidcore)
             end
         end
     end
-    local rating = d and RatingPart(d)
-    if rating then text = text and (text .. " " .. rating) or rating end
+    local text = #parts > 0 and table.concat(parts, "|cff666666  ·  |r") or nil
     if text then
         EnsureBadge(button):SetText(text)
     elseif button.SlotFillerBadge then
@@ -173,12 +189,6 @@ local function OnSearchEntryTooltip(tooltip, resultID)
             AddDungeonLines(tooltip, r, ns.db.targetKey or 10, ns.dropCtx)
             shown = true
         end
-    end
-    local part, level, gain, planned = RatingPart(d)
-    if part then
-        if not shown then tooltip:AddLine(" ") end
-        tooltip:AddLine(string.format("Slot Filler: rating +%d if you time a +%d%s", ns:Round(gain), level, planned and " (planned)" or ""), 1, 1, 1, true)
-        shown = true
     end
     if shown then tooltip:Show() end
 end
@@ -287,6 +297,32 @@ ns:On("LOGIN", function()
     end)
 end)
 
+local function Quoted(v)
+    if ns.issecret(v) then return "secret" end
+    if type(v) == "string" then return '"' .. v .. '"' end
+    return tostring(v)
+end
+
+-- /sf lfg: what the client exposes for the listings on screen
+function ns:PrintLFGDiagnostics()
+    self:Print("Group listings")
+    local n = 0
+    for button in pairs(hookedButtons) do
+        if button:IsShown() and button.resultID then
+            n = n + 1
+            local id = button.resultID
+            local okInfo, info = pcall(C_LFGList.GetSearchResultInfo, id)
+            local title = "no info"
+            if okInfo and type(info) == "table" then title = ns.issecret(info) and "secret info" or Quoted(info.name) end
+            local okText, text = pcall(function() return button.Name and button.Name:GetText() end)
+            local d = DungeonForResult(id)
+            local badge = button.SlotFillerBadge and button.SlotFillerBadge:GetText() or ""
+            print(string.format("  result %s: %s | title from result: %s | entry name: %s | badge: %s",
+                tostring(id), d and d.name or "no dungeon", title, okText and Quoted(text) or "error", (badge:gsub("|", "||"))))
+        end
+    end
+    if n == 0 then print("  no listings on screen (open Premade Groups and search first)") end
+end
+
 ns:On("RESULTS_UPDATED", function() ns:RefreshLFGBadges() end)
 ns:On("SETTINGS_CHANGED", function() ns:RefreshLFGBadges() end)
-ns:On("RATING_UPDATED", function() ns:RefreshLFGBadges() end)

@@ -27,6 +27,7 @@ local GUTTER = 12        -- scrollbar gutter right of a list
 local COL_DROPS, COL_WANTED = 56, 68
 local IO_HEADER_H = 52   -- IO tab: rating/target row and runs/max key row
 local COL_BEST, COL_RUN, COL_GAIN = 56, 44, 52
+local COL_POOL, COL_CHANCE, COL_EGAIN, COL_TARGET = 50, 46, 48, 44   -- Voidcore tab
 local LADDER_ROWS = 5    -- key ladder under an expanded IO row
 local RUNS_TAB_W = 22
 
@@ -35,7 +36,9 @@ local dungeonRows, dungeonItems = {}, {}
 local raidRows, raidItems, raidHeaders = {}, {}, {}
 local gearRows, gearItems = {}, {}
 local ioRows, ioLadder = {}, {}
+local rollRows, rollItems = {}, {}
 ns.uiExpandedMapID = nil
+ns.uiExpandedRollKey = nil      -- a Voidcore tab source listing its pool
 ns.uiExpandedEncounterID = nil
 ns.uiExpandedSlotID = nil
 ns.uiExpandedRatingMapID = nil
@@ -314,7 +317,8 @@ ns.UI = { TextButton = TextButton, Check = Check, Tip = Tip, Dropdown = Dropdown
     StatProfileDropdown = StatProfileDropdown, RefreshStatProfileButton = RefreshStatProfileButton,
     IsMenuShown = function() return (menu and menu:IsShown()) and true or false end,
     -- row pools, for the test harness
-    Pools = { dungeonItems = dungeonItems, raidItems = raidItems, gearItems = gearItems, ioRows = ioRows, ioLadder = ioLadder } }
+    Pools = { dungeonItems = dungeonItems, raidItems = raidItems, gearItems = gearItems, ioRows = ioRows, ioLadder = ioLadder,
+        rollRows = rollRows, rollItems = rollItems } }
 
 -- Tooltips show the Voidcore roll while Shift is held: redraw the hovered
 -- row's tooltip when Shift changes.
@@ -754,6 +758,38 @@ local function BuildIOPage(page)
 end
 
 -------------------------------------------------------------------------------
+-- Voidcore page: where a Nebulous Voidcore is best spent
+-------------------------------------------------------------------------------
+local function BuildRollsPage(page)
+    local strip = CreateFrame("Frame", nil, page)
+    strip:SetPoint("TOPLEFT", 0, 0)
+    strip:SetPoint("TOPRIGHT", -GUTTER, 0)
+    strip:SetHeight(20)
+    local reread = TextButton(strip, "Re-read", 56, 20, 10)
+    reread:SetPoint("RIGHT", 0, 0)
+    reread:SetScript("OnClick", function() ns:ClearVoidcorePools(); ns:RefreshWindow() end)
+    Tip(reread, "ANCHOR_BOTTOM", "Re-read the pools", "Reads every Voidcache tooltip again. Pools are re-read by themselves after a roll and when your loot spec changes.")
+    strip.Reread = reread
+    strip.Text = Style.Text(strip, 11, 1, 1, 1, 0.53)
+    strip.Text:SetPoint("LEFT", 4, 0)
+    strip.Text:SetPoint("RIGHT", reread, "LEFT", -6, 0)
+    strip.Text:SetJustifyH("LEFT")
+    strip.Text:SetWordWrap(false)
+    page.Strip = strip
+
+    local colHead = ColumnHeader(page, {
+        { "best", "Source", nil, "Dungeons at the selected key, bosses at the Raid tab's difficulty. Click a row for its pool. Click here to sort by the best place to roll." },
+        { "pool", "Pool", COL_POOL, "Usable roll results over what the pool still holds for your loot spec. Click to sort." },
+        { "chance", "Chance", COL_CHANCE, "The share of the pool that would be an upgrade. Click to sort." },
+        { "gain", "Gain", COL_EGAIN, "Item levels a roll here gains on average, slot-weighted; Voidcore targets and wanted items count extra. The tab sorts by this." },
+        { "targets", "Targets", COL_TARGET, "Voidcore targets still in the pool. Click to sort." },
+    }, function(mode) ns.db.rollSort = mode end, STRIP_H)
+    page.ColHead = colHead
+    page.List, page.Content = ListPanel(page, colHead, 18)
+    StatusLine(page)
+end
+
+-------------------------------------------------------------------------------
 -- Frame construction
 -------------------------------------------------------------------------------
 local function BuildFrame()
@@ -816,6 +852,12 @@ local function BuildFrame()
     end
     rescan:SetPoint("RIGHT", close, "LEFT", -2, 0)
     rescan:SetScript("OnClick", function() ns:RescanLoot(true) end)
+    local cogAtlas = Style.FindAtlas({ "mechagon-projects", "GM-icon-settings" })
+    local cog = cogAtlas and GlyphButton(title, cogAtlas, 20) or GlyphButton(title, nil, 20, "Interface\\Icons\\Trade_Engineering")
+    cog:SetPoint("RIGHT", rescan, "LEFT", -2, 0)
+    cog:SetScript("OnClick", function() ns:ToggleOptionsPanel() end)
+    Tip(cog, "ANCHOR_BOTTOM", "Settings", "Click again to come back.")
+    frame.SettingsButton = cog
     Tip(rescan, "ANCHOR_BOTTOM", "Rescan loot tables",
         "Re-reads every dungeon's loot from the Adventure Guide for the selected spec.")
     frame.RescanButton = rescan
@@ -837,10 +879,12 @@ local function BuildFrame()
     BuildRaidPage(NewPage("raid", listTop))
     BuildGearPage(NewPage("gear", listTop))
     BuildIOPage(NewPage("io", TITLE_H + 6))
+    BuildRollsPage(NewPage("voidcore", listTop))
     ns:BuildSettingsPage(NewPage("settings", TITLE_H + 6))
 
-    -- tab row hanging under the frame, like the Group Finder's own tabs
-    local tabDefs = { { "dungeons", "Dungeons" }, { "raid", "Raid" }, { "gear", "Gear" }, { "io", "IO" }, { "settings", "Settings" } }
+    -- tab row hanging under the frame, like the Group Finder's own tabs;
+    -- Settings is the cog in the title bar
+    local tabDefs = { { "dungeons", "Dungeons" }, { "raid", "Raid" }, { "gear", "Gear" }, { "io", "IO" }, { "voidcore", "Voidcore" } }
     local tabs = CreateFrame("Frame", nil, frame)
     tabs:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", PAD, 1)
     tabs:SetSize(#tabDefs * TAB_W + (#tabDefs - 1), TAB_H)
@@ -876,10 +920,12 @@ function ns:ShowPage(key)
     CloseMenu()
     -- the IO tab has its own header; the toolbar is a loot thing
     if key == "settings" or key == "io" then frame.Toolbar:Hide() else frame.Toolbar:Show() end
+    if key ~= "settings" then frame.lastPage = key end
     frame.page = key
     Style.SelectTab(frame.TabRow, key)
     -- one request per visit, so the rating data is fresh; never from a refresh
     if key == "io" then self:RequestRatingData() end
+    if key == "voidcore" then self:RetryEmptyVoidcorePools() end
     self:RefreshWindow()
 end
 
@@ -889,7 +935,7 @@ end
 
 -- kept for the Settings > AddOns button and the slash command
 function ns:ToggleOptionsPanel()
-    self:ShowPage(self:CurrentPage() == "settings" and "dungeons" or "settings")
+    self:ShowPage(self:CurrentPage() == "settings" and (frame and frame.lastPage or "dungeons") or "settings")
 end
 
 function ns:OpenOptions()
@@ -1009,6 +1055,54 @@ local function NewRatingRow(content, onClick, onRightClick, onEnter)
     end)
     row:SetScript("OnEnter", onEnter)
     row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    return row
+end
+
+-- Voidcore tab row: icon, chevron, name, then Pool / Chance / Gain /
+-- Targets columns anchored like the column header.
+local function NewRollRow(content, onClick, onEnter)
+    local row = CreateFrame("Button", nil, content)
+    row:SetHeight(ROW_H)
+    row.Bg = row:CreateTexture(nil, "BACKGROUND")
+    row.Bg:SetAllPoints()
+    row.Bg:SetColorTexture(1, 1, 1, 0)
+    row.Hover = row:CreateTexture(nil, "HIGHLIGHT")
+    row.Hover:SetAllPoints()
+    row.Hover:SetColorTexture(1, 1, 1, 0.06)
+    row.Icon = row:CreateTexture(nil, "ARTWORK")
+    row.Icon:SetSize(ROW_H - 6, ROW_H - 6)
+    row.Icon:SetPoint("LEFT", 4, 0)
+    Style.SquareIcon(row.Icon, row)
+    row.Border = row:CreateTexture(nil, "BACKGROUND", nil, 2)
+    row.Border:SetPoint("TOPLEFT", row.Icon, "TOPLEFT", -1, 1)
+    row.Border:SetPoint("BOTTOMRIGHT", row.Icon, "BOTTOMRIGHT", 1, -1)
+    row.Border:SetColorTexture(0, 0, 0, 1)
+    row.Arrow = row:CreateTexture(nil, "ARTWORK")
+    row.Arrow:SetAtlas(ARROW_ATLAS)
+    row.Arrow:SetSize(10, 7)
+    row.Arrow:SetPoint("LEFT", row.Icon, "RIGHT", 6, 0)
+    row.Arrow:SetVertexColor(1, 1, 1, 0.6)
+    local function Column(width, anchorTo)
+        local fs = Style.Text(row, 12)
+        if anchorTo then fs:SetPoint("RIGHT", anchorTo, "LEFT", -1, 0) else fs:SetPoint("RIGHT", -2, 0) end
+        fs:SetWidth(width)
+        fs:SetJustifyH("CENTER")
+        return fs
+    end
+    row.Targets = Column(COL_TARGET)
+    row.EGain = Column(COL_EGAIN, row.Targets)
+    row.Chance = Column(COL_CHANCE, row.EGain)
+    row.Pool = Column(COL_POOL, row.Chance)
+    row.Name = Style.Text(row, 12)
+    row.Name:SetPoint("LEFT", row.Arrow, "RIGHT", 6, 0)
+    row.Name:SetPoint("RIGHT", row.Pool, "LEFT", -4, 0)
+    row.Name:SetJustifyH("LEFT")
+    row.Name:SetWordWrap(false)
+    row:RegisterForClicks("LeftButtonUp")
+    row:SetScript("OnClick", function(self) onClick(self) end)
+    row.tipFn = onEnter
+    row:SetScript("OnEnter", function(self) ns.hoveredTip = self; onEnter(self) end)
+    row:SetScript("OnLeave", function() ns.hoveredTip = nil; GameTooltip:Hide() end)
     return row
 end
 
@@ -1173,7 +1267,11 @@ local function NewItemRow(content, where)
     it:SetScript("OnClick", function(self, button)
         if not self.eval then return end
         if button == "RightButton" then
-            ns:CycleItemState(self.eval.item.itemID)
+            if self.roll and self.source then
+                ns:ToggleRolled(self.source, (self.eval.token or self.eval.item).itemID)
+            else
+                ns:CycleItemState(self.eval.item.itemID)
+            end
         elseif IsModifiedClick("CHATLINK") and self.eval.item.link then
             ChatEdit_InsertLink(self.eval.item.link)
         elseif IsModifiedClick("DRESSUP") and self.eval.item.link then
@@ -1200,9 +1298,12 @@ local function Acquire(pool, index, factory)
 end
 
 -- Fill a drop row. `whereText` replaces the slot text when given.
-local function FillItemRow(it, eval, whereText)
+-- `verdict` (default the eval itself) is the class/gain shown: the roll's
+-- verdict on the Voidcore tab.
+local function FillItemRow(it, eval, whereText, verdict)
     local self = ns
-    local counts = self:CountsAsUpgrade(eval)
+    verdict = verdict or eval
+    local counts = self:CountsAsUpgrade(verdict)
     local state = self:GetItemState(eval.item.itemID)
     local target = self:IsVoidcoreTarget(eval.item.itemID)
     local lit = counts or state == "want" or target
@@ -1232,16 +1333,16 @@ local function FillItemRow(it, eval, whereText)
     end
     if state == "exclude" then
         it.Gain:SetText("|cffff5555excluded|r")
-    elseif eval.class == TRACK and eval.gain then
-        it.Gain:SetText(string.format("%s%+d|r|cff888888/%+d|r", Hex(TRACK), eval.gain, eval.potentialGain or 0))
-    elseif eval.class == ILVL and eval.gain then
-        it.Gain:SetText(string.format("%s%+d|r", Hex(ILVL), eval.gain))
-    elseif eval.class == STAT then
+    elseif verdict.class == TRACK and verdict.gain then
+        it.Gain:SetText(string.format("%s%+d|r|cff888888/%+d|r", Hex(TRACK), verdict.gain, verdict.potentialGain or 0))
+    elseif verdict.class == ILVL and verdict.gain then
+        it.Gain:SetText(string.format("%s%+d|r", Hex(ILVL), verdict.gain))
+    elseif verdict.class == STAT then
         it.Gain:SetText(Hex(STAT) .. "stats|r")
-    elseif eval.class == WANT and eval.gain then
-        it.Gain:SetText(string.format("%s%+d|r", eval.gain > 0 and Hex(ILVL) or "|cff777777", eval.gain))
-    elseif eval.gain then
-        it.Gain:SetText(string.format("|cff777777%+d|r", eval.gain))
+    elseif verdict.class == WANT and verdict.gain then
+        it.Gain:SetText(string.format("%s%+d|r", verdict.gain > 0 and Hex(ILVL) or "|cff777777", verdict.gain))
+    elseif verdict.gain then
+        it.Gain:SetText(string.format("|cff777777%+d|r", verdict.gain))
     else
         it.Gain:SetText("")
     end
@@ -1379,11 +1480,17 @@ function ns:ShowItemTooltip(btn)
     local ctx = btn.ctx or self.dropCtx
     local shift = IsShiftKeyDown and IsShiftKeyDown()
     GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-    -- a token row shows the token's own tooltip; the piece has its own row
+    -- a token row shows the token's own tooltip; the piece has its own row;
+    -- a Voidcore tab row shows the item as the roll would give it
     local nested = TokenNested(eval)
+    local roll = btn.roll and eval.voidcore and ctx and ctx.voidcore and ctx.voidcore.ilvl and true or false
+    if roll then shift = true end
     local link, kind
     if nested then
         link, kind = eval.token.link, "token"
+    elseif roll then
+        local vc = ctx.voidcore
+        link, kind = self:LinkForContext(item, eval.voidcoreMatched or { ilvl = vc.ilvl, step = vc.step, track = vc.track, potential = vc.potential, key = ctx.key, isVoidcore = true })
     else
         link, kind = self:LinkForContext(item, eval.matched or ctx or {})
     end
@@ -1410,9 +1517,16 @@ function ns:ShowItemTooltip(btn)
     end
     if ctx and ctx.ilvl and not nested then
         if kind == "exact" then
-            local shown = ctx.raid and string.format("Shown as it drops on %s", ctx.difficultyName or "this difficulty")
-                or string.format("Shown as it drops from a +%d", ctx.key or 0)
-            if eval.matched then shown = shown .. string.format(", upgraded free to %d", eval.matched.ilvl) end
+            local shown
+            if roll then
+                shown = ctx.raid and string.format("Shown as a Voidcore roll on %s", ctx.difficultyName or "this difficulty")
+                    or string.format("Shown as a Voidcore roll from a +%d", ctx.key or 0)
+                if eval.voidcoreMatched then shown = shown .. string.format(", upgraded free to %d", eval.voidcoreMatched.ilvl) end
+            else
+                shown = ctx.raid and string.format("Shown as it drops on %s", ctx.difficultyName or "this difficulty")
+                    or string.format("Shown as it drops from a +%d", ctx.key or 0)
+                if eval.matched then shown = shown .. string.format(", upgraded free to %d", eval.matched.ilvl) end
+            end
             GameTooltip:AddLine("|cff888888" .. shown .. "|r")
         elseif item.token then
             GameTooltip:AddLine(item.equipLoc == "TIER_ANY" and "|cff888888Tier token: traded for your set piece of any slot; judged for the weakest|r"
@@ -1475,6 +1589,17 @@ function ns:ShowItemTooltip(btn)
     GameTooltip:AddLine("  " .. Verdict(eval), 1, 1, 1, true)
     -- the Voidcore roll, on request
     local vc = ctx and ctx.voidcore
+    if btn.roll and btn.source and self:IsRolled(btn.source, (eval.token or item).itemID) then
+        GameTooltip:AddLine("|cff888888Rolled already: out of this pool until it refills. Right-click: not rolled.|r")
+    elseif btn.roll and btn.source then
+        GameTooltip:AddLine("|cff888888Right-click: mark as rolled.|r")
+    end
+    if self:IsCatalystCandidate(eval) then
+        local p = self:SetProgress()
+        local charges = p.charges and string.format(", %d charge%s", p.charges, p.charges == 1 and "" or "s") or ""
+        GameTooltip:AddLine(string.format("|cff888888Catalyst: can become a set piece, stats kept%s%s|r",
+            p.nextBonus and string.format(" (%d-piece needs %d)", p.nextBonus, p.need) or "", charges))
+    end
     if eval.item.noRoll then
         GameTooltip:AddLine("|cff888888Not in the bonus roll pool|r")
     elseif vc and vc.ilvl and eval.voidcore then
@@ -1913,6 +2038,8 @@ local TWIN = { [11] = 12, [12] = 11, [13] = 14, [14] = 13, [16] = 17, [17] = 16 
 
 local function RefreshGear(page)
     local self = ns
+    local setText = self:SetProgressText()
+    page.Hint:SetText((setText and (setText .. ".  ") or "") .. "Star: want it.  Purple star: Voidcore it.  Right-click a slot: Auto / Want / Skip.")
     local db = self.db
     local sortMode = db.gearSort or "slot"
     if sortMode ~= "upgrades" and sortMode ~= "wanted" then sortMode = "slot" end
@@ -2292,6 +2419,145 @@ local function RefreshIO(page)
     page.Progress:Hide()
 end
 
+-------------------------------------------------------------------------------
+-- Voidcore tab
+-------------------------------------------------------------------------------
+function ns:ShowRollTooltip(row)
+    local s = row.source
+    if not s then return end
+    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(s.name)
+    local where = s.kind == "dungeon" and string.format("a +%d", s.key or 0) or self:RaidDifficultyName(s.raid, s.diffKey)
+    if not s.ready then
+        GameTooltip:AddLine("Loot not scanned yet.", 0.7, 0.7, 0.7)
+    else
+        GameTooltip:AddLine(string.format("Pool for %s from %s: %d of %d left%s", self:SpecName(self:GetLootSpecID()) or "your loot spec", where,
+            s.count, s.total, s.tooltipRead and "  |cff888888(the game's own list)|r" or ""), 1, 1, 1)
+        if s.count > 0 then
+            GameTooltip:AddLine(string.format("%d usable (%d%%), %d target%s, %d wanted", s.usable, math.floor(s.chance * 100 + 0.5),
+                s.targets, s.targets == 1 and "" or "s", s.wanted), 1, 1, 1)
+            GameTooltip:AddLine(string.format("A roll here gains |cffffffff+%.1f|r item levels on average (slot-weighted; targets and wanted items count extra).", s.ev), 0.9, 0.9, 0.9, true)
+            if s.best then
+                GameTooltip:AddLine(string.format("Best in the pool: %s (+%.1f)", ItemName(s.best.token or s.best.item), s.bestValue), 0.9, 0.9, 0.9, true)
+            end
+        end
+    end
+    GameTooltip:AddLine("Click: the pool, with what each roll would be. Right-click an item there: mark it rolled.", 0.6, 0.6, 0.6)
+    GameTooltip:Show()
+end
+
+local function RollOrder(a, b)
+    local ca, cb = a.voidcore and a.voidcore.class or -1, b.voidcore and b.voidcore.class or -1
+    if ca ~= cb then return ca > cb end
+    return ItemName(a.token or a.item) < ItemName(b.token or b.item)
+end
+
+local function RefreshRolls(page)
+    local self = ns
+    local db = self.db
+    local sortMode = db.rollSort or "best"
+    if sortMode ~= "pool" and sortMode ~= "chance" and sortMode ~= "targets" and sortMode ~= "gain" then sortMode = "best" end
+    if page.ColHead.selectedTabID ~= sortMode then Style.SelectTab(page.ColHead, sortMode) end
+    local lootSpec, evalSpec = self:GetLootSpecID(), self:GetEvalSpecID()
+    local cores = self:VoidcoreCount()
+    local setText = self:SetProgressText()
+    page.Strip.Text:SetText(string.format("Pools for %s%s%s", self:SpecName(lootSpec) or "your loot spec",
+        cores and string.format("  ·  %d Voidcore%s", cores, cores == 1 and "" or "s") or "",
+        setText and ("  ·  " .. setText) or ""))
+
+    local sources = self:VoidcoreSources(sortMode)
+    local y, rowIndex, itemIndex = 0, 0, 0
+    local content = page.Content
+    local width = content:GetWidth()
+    local function Note(text)
+        itemIndex = itemIndex + 1
+        local it = Acquire(rollItems, itemIndex, function() return NewItemRow(content, false) end)
+        it:ClearAllPoints()
+        it:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+        it:SetWidth(width)
+        FillNoteRow(it, text)
+        y = y + ITEM_H
+    end
+    for _, s in ipairs(sources) do
+        rowIndex = rowIndex + 1
+        local row = Acquire(rollRows, rowIndex, function()
+            return NewRollRow(content, function(self2)
+                ns.uiExpandedRollKey = (ns.uiExpandedRollKey ~= self2.key) and self2.key or nil
+                ns:RefreshWindow()
+            end, function(self2) ns:ShowRollTooltip(self2) end)
+        end)
+        row.key = s.cacheID or s.name
+        row.source = s
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+        row:SetWidth(width)
+        row.Icon:SetTexture(s.kind == "dungeon" and DungeonIcon(s.dungeon) or (s.boss and s.boss.portrait) or 134400)
+        local dim = s.ready and s.usable == 0
+        row.Icon:SetDesaturated(dim)
+        row.Border:SetColorTexture(0, 0, 0, 1)
+        row.Name:SetText(s.name .. (s.kind == "dungeon" and string.format("  |cff888888+%d|r", s.key or 0) or ""))
+        row.Name:SetAlpha(dim and 0.45 or 1)
+        local expanded = self.uiExpandedRollKey == row.key
+        row.Arrow:SetRotation(expanded and 0 or math.rad(90))
+        if not s.ready then
+            row.Pool:SetText("|cff888888...|r"); row.Chance:SetText(""); row.EGain:SetText(""); row.Targets:SetText("")
+        else
+            row.Pool:SetText(string.format("%s%d|r|cff888888/%d|r", Hex(s.usable > 0 and TRACK or NONE), s.usable, s.count))
+            row.Chance:SetText(s.count > 0 and string.format("|cffffffff%d%%|r", math.floor(s.chance * 100 + 0.5)) or "|cff444444-|r")
+            row.EGain:SetText(s.ev > 0 and string.format("%s+%.1f|r", Hex(TRACK), s.ev) or "|cff444444-|r")
+            row.Targets:SetText(s.targets > 0 and (ns.VC_HEX .. s.targets .. "|r") or "|cff444444-|r")
+        end
+        RowBackground(row, rowIndex, expanded, false)
+        y = y + ROW_H + 1
+        if expanded then
+            if s.missing then
+                Note("No Voidcache known for this source.")
+            elseif not s.ready then
+                Note("Loot not scanned yet.")
+            elseif s.total == 0 then
+                Note("Nothing here can be rolled.")
+            else
+                local function Rows(list, rolled)
+                    local sorted = {}
+                    for i, eval in ipairs(list) do sorted[i] = eval end
+                    table.sort(sorted, RollOrder)
+                    for _, eval in ipairs(sorted) do
+                        itemIndex = itemIndex + 1
+                        local it = Acquire(rollItems, itemIndex, function() return NewItemRow(content, false) end)
+                        it:ClearAllPoints()
+                        it:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+                        it:SetWidth(width)
+                        it.dungeonName = nil
+                        it.ctx = s.result and s.result.ctx
+                        it.roll = true
+                        it.source = s
+                        FillItemRow(it, eval, nil, eval.voidcore)
+                        if rolled then
+                            it.Name:SetAlpha(0.35)
+                            it.Icon:SetDesaturated(true)
+                            it.Gain:SetText("|cff888888rolled|r")
+                        end
+                        y = y + ITEM_H
+                    end
+                end
+                Rows(s.items, false)
+                Rows(s.rolledItems, true)
+            end
+            y = y + 4
+        end
+    end
+    if #sources == 0 then Note(self.loot and "Nothing to roll on yet." or "Loot tables not scanned yet.") end
+    for i = rowIndex + 1, #rollRows do rollRows[i]:Hide() end
+    for i = itemIndex + 1, #rollItems do rollItems[i]:Hide() end
+    content:SetHeight(math.max(y, 1))
+    if lootSpec ~= evalSpec then
+        page.Status:SetText(string.format("Pools follow your loot spec; the window evaluates %s.", self:SpecName(evalSpec) or "another spec"))
+    else
+        page.Status:SetText("Rolls are recorded as they happen; right-click an item to mark one by hand.")
+    end
+    page.Progress:Hide()
+end
+
 function ns:RefreshWindow()
     if not frame or not frame:IsShown() then return end
     local page = frame.page or "dungeons"
@@ -2308,6 +2574,8 @@ function ns:RefreshWindow()
         RefreshDungeons(frame.Pages.dungeons)
     elseif page == "raid" then
         RefreshRaid(frame.Pages.raid)
+    elseif page == "voidcore" then
+        RefreshRolls(frame.Pages.voidcore)
     else
         RefreshGear(frame.Pages.gear)
     end
@@ -2611,6 +2879,7 @@ end)
 ns:On("SETTINGS_CHANGED", function() ns:RefreshWindow() end)
 ns:On("RATING_UPDATED", function() ns:RefreshWindow() end)
 ns:On("SPEC_CHANGED", function() ns:RefreshWindow() end)
+ns:On("VOIDCORE_POOLS_UPDATED", function() if frame and frame.page == "voidcore" then ns:RefreshWindow() end end)
 ns:On("GEAR_UPDATED", function() ns:RefreshWindow() end)
 Style.OnLooksChanged(function() ns:RefreshWindow() end)
 

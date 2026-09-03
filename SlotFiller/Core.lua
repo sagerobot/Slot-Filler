@@ -66,10 +66,12 @@ ns.DEFAULTS = {
         ioRuns = nil,
         -- IO tab sorting: "plan" | "best" | "gain" | "name"
         ioSort = "plan",
+        -- Voidcore tab sorting: "best" | "pool" | "chance" | "targets"
+        rollSort = "best",
         -- IO tab plan order: "rating" (highest key first) | "gear" (most
         -- usable drops at the planned key first)
         ioOrder = "rating",
-        -- Rating gain on group listings and keystone tooltips.
+        -- Rating gain on keystone tooltips.
         ioBadge = true,
         -- Debug output.
         debug = false,
@@ -91,6 +93,9 @@ ns.DEFAULTS = {
         voidcoreBySpec = {},
         -- Wanted items and Voidcore targets that turned up: [specID] = { [itemID] = time }.
         obtained = {},
+        -- Voidcore rolls received, per loot spec and pool (Voidcore.lua):
+        -- rolled[specID][poolKey][itemID] = time
+        rolled = {},
         -- Loot cache: [seasonID] = { [specID] = { time, version, dungeons = { [challengeMapID] = {...} } } }
         lootCache = {},
         -- Spec the window evaluates for (nil = follow loot spec).
@@ -260,6 +265,10 @@ SlashCmdList.SLOTFILLER = function(msg)
         ns:Print("Debug output", ns.db.debug and "enabled" or "disabled")
     elseif cmd == "status" then
         ns:PrintStatus()
+    elseif cmd == "voidcore" then
+        ns:PrintVoidcoreDiagnostics()
+    elseif cmd == "lfg" then
+        ns:PrintLFGDiagnostics()
     elseif cmd == "link" or cmd == "links" then
         ns:PrintLinkDiagnostics()
     elseif cmd == "pawn" or cmd == "weights" then
@@ -327,6 +336,8 @@ SlashCmdList.SLOTFILLER = function(msg)
         print("  /sf options    open settings")
         print("  /sf status     print what the addon currently knows")
         print("  /sf link       diagnostics for item tooltips at the selected key")
+        print("  /sf voidcore   diagnostics for the bonus roll pools (Voidcache tooltips)")
+        print("  /sf lfg        diagnostics for the Premade Groups listings on screen")
         print("  /sf pawn <string>   save a Pawn scale as a weight profile for the current spec and use it")
         print("  /sf pawn       list weight profiles: use <name>, rename <n> <name>, delete <name>, clear")
         print("  /sf reset overrides|cache|all")
