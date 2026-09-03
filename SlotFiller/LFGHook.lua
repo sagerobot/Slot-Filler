@@ -41,31 +41,51 @@ local function EnsureBadge(button)
     return badge
 end
 
-local function UpdateButton(button)
-    local badge = button.SlotFillerBadge
-    if not ns.db or not ns.db.lfgBadges then
-        if badge then badge:SetText("") end
-        return
+-- Rating gain for a dungeon: text, level, gain, planned. The planned run when
+-- the dungeon is in the selected plan (accent), else the first key that
+-- gains anything (grey). Nothing while the data is missing or the target is met.
+local function RatingPart(d)
+    if not ns.db.ioBadge or not ns:RatingsReady() then return nil end
+    local plan, info = ns:SelectedRatingPlan()
+    if info and info.reached then return nil end
+    local mapID = d.challengeMapID
+    local run = plan and plan.byMap[mapID]
+    if run then
+        return string.format("%s+%d|r", ns.Style.AccentHex(), ns:Round(run.gain)), run.level, run.gain, true
     end
+    local e = ns:DungeonRating(mapID)
+    if not e.floor then return nil end
+    local gain = ns:RatingGain(mapID, e.floor)
+    return string.format("|cff888888+%d|r", ns:Round(gain)), e.floor, gain, false
+end
+ns.RatingPartForDungeon = RatingPart
+
+local function UpdateButton(button)
+    if not ns.db then return end
     local d = DungeonForResult(button.resultID)
-    local r = d and ns:ResultForDungeon(d)
-    badge = EnsureBadge(button)
-    if r and r.scanned then
-        local text
-        if r.upgrades > 0 then
-            text = string.format("%s%d^|r", HexFor(r), r.upgrades)
-        else
-            text = "|cff666666-|r"
+    local text
+    if ns.db.lfgBadges then
+        local r = d and ns:ResultForDungeon(d)
+        if r and r.scanned then
+            if r.upgrades > 0 then
+                text = string.format("%s%d^|r", HexFor(r), r.upgrades)
+            else
+                text = "|cff666666-|r"
+            end
+            if r.wanted and r.wanted > 0 then
+                text = text .. ns.Style.AccentHex() .. "*|r"
+            end
+            if r.voidcore and r.voidcore > 0 then
+                text = text .. ns.VC_HEX .. "*|r"
+            end
         end
-        if r.wanted and r.wanted > 0 then
-            text = text .. ns.Style.AccentHex() .. "*|r"
-        end
-        if r.voidcore and r.voidcore > 0 then
-            text = text .. ns.VC_HEX .. "*|r"
-        end
-        badge:SetText(text)
-    else
-        badge:SetText("")
+    end
+    local rating = d and RatingPart(d)
+    if rating then text = text and (text .. " " .. rating) or rating end
+    if text then
+        EnsureBadge(button):SetText(text)
+    elseif button.SlotFillerBadge then
+        button.SlotFillerBadge:SetText("")
     end
 end
 
@@ -143,13 +163,24 @@ local function AddDungeonLines(tooltip, r, key, ctx)
 end
 
 local function OnSearchEntryTooltip(tooltip, resultID)
-    if not ns.db or not ns.db.lfgTooltip then return end
+    if not ns.db then return end
     local d = DungeonForResult(resultID)
     if not d then return end
-    local r = ns:ResultForDungeon(d)
-    if not r or not r.scanned then return end
-    AddDungeonLines(tooltip, r, ns.db.targetKey or 10, ns.dropCtx)
-    tooltip:Show()
+    local shown = false
+    if ns.db.lfgTooltip then
+        local r = ns:ResultForDungeon(d)
+        if r and r.scanned then
+            AddDungeonLines(tooltip, r, ns.db.targetKey or 10, ns.dropCtx)
+            shown = true
+        end
+    end
+    local part, level, gain, planned = RatingPart(d)
+    if part then
+        if not shown then tooltip:AddLine(" ") end
+        tooltip:AddLine(string.format("Slot Filler: rating +%d if you time a +%d%s", ns:Round(gain), level, planned and " (planned)" or ""), 1, 1, 1, true)
+        shown = true
+    end
+    if shown then tooltip:Show() end
 end
 
 -------------------------------------------------------------------------------
@@ -168,18 +199,35 @@ end
 function ns:AddKeystoneTooltip(tooltip, mapID, level)
     local d = self.dungeonByMapID and self.dungeonByMapID[mapID]
     if not d then return end
-    local r = self:EvaluateDungeonAt(d, level)
-    if not r.scanned then
-        tooltip:AddLine(" ")
-        tooltip:AddLine("Slot Filler: loot table not scanned yet", 0.6, 0.6, 0.6)
-    else
-        AddDungeonLines(tooltip, r, level or (self.db.targetKey or 10), r.ctx)
+    local shown = false
+    if self.db.keystoneTooltip then
+        local r = self:EvaluateDungeonAt(d, level)
+        if not r.scanned then
+            tooltip:AddLine(" ")
+            tooltip:AddLine("Slot Filler: loot table not scanned yet", 0.6, 0.6, 0.6)
+        else
+            AddDungeonLines(tooltip, r, level or (self.db.targetKey or 10), r.ctx)
+        end
+        shown = true
     end
-    tooltip:Show()
+    -- the rating this key would give if timed, against the dungeon's best
+    if self.db.ioBadge and level and self:RatingsReady() then
+        local e = self:DungeonRating(mapID)
+        local score = self:TimedScore(level)
+        local gain = math.max(0, score - e.score)
+        if not shown then tooltip:AddLine(" ") end
+        if gain > 0 then
+            tooltip:AddLine(string.format("Rating: %d -> %d (+%d) if timed", self:Round(e.score), self:Round(score), self:Round(gain)), 1, 1, 1)
+        else
+            tooltip:AddLine(string.format("Rating: no gain at +%d (best %d)", level, self:Round(e.score)), 0.6, 0.6, 0.6)
+        end
+        shown = true
+    end
+    if shown then tooltip:Show() end
 end
 
 local function OnItemTooltip(tooltip, data)
-    if not ns.db or not ns.db.keystoneTooltip then return end
+    if not ns.db or not (ns.db.keystoneTooltip or ns.db.ioBadge) then return end
     if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then return end
     local link = data and data.hyperlink
     if TooltipUtil and TooltipUtil.GetDisplayedItem then
@@ -241,3 +289,4 @@ end)
 
 ns:On("RESULTS_UPDATED", function() ns:RefreshLFGBadges() end)
 ns:On("SETTINGS_CHANGED", function() ns:RefreshLFGBadges() end)
+ns:On("RATING_UPDATED", function() ns:RefreshLFGBadges() end)

@@ -56,10 +56,22 @@ ns.DEFAULTS = {
         freeFollow = false,
         -- Free mode: offset from the Dungeons & Raids window's top-left corner.
         freeOffset = nil,
+        -- IO tab: which plan is shown, by run count (nil = the easiest plan).
+        ioRuns = nil,
+        -- IO tab sorting: "plan" | "best" | "gain" | "name"
+        ioSort = "plan",
+        -- Rating gain on group listings and keystone tooltips.
+        ioBadge = true,
         -- Debug output.
         debug = false,
     },
     char = {
+        -- IO tab: target rating (nil = the next milestone above the current rating).
+        ioTarget = nil,
+        -- IO tab: highest key the plans may use (nil = highest timed key + 2).
+        ioMaxKey = nil,
+        -- IO tab: dungeons left out of the plans: [challengeMapID] = true
+        ioAvoid = {},
         -- Per-slot manual state: [slotID] = "auto" | "want" | "skip"
         slotState = {},
         -- Legacy per-item overrides (moved into itemStateBySpec on first use).
@@ -277,9 +289,10 @@ SlashCmdList.SLOTFILLER = function(msg)
         end
     elseif cmd == "reset" then
         if rest == "overrides" then
-            wipe(ns.cdb.slotState); wipe(ns.cdb.itemState)
+            wipe(ns.cdb.slotState); wipe(ns.cdb.itemState); wipe(ns.cdb.ioAvoid)
             ns:ClearItemStates()
-            ns:Print("Slot and item overrides cleared.")
+            ns:Fire("RATING_UPDATED")
+            ns:Print("Slot, item and avoided-dungeon overrides cleared.")
         elseif rest == "cache" then
             wipe(ns.cdb.lootCache)
             ns:Print("Loot cache cleared. Rescanning.")

@@ -3,7 +3,7 @@
 A World of Warcraft (retail, Midnight 12.1) addon that answers one question
 when you open the Group Finder: **which Mythic+ dungeon should I run for gear?**
 
-It docks a window to the left of the Dungeons & Raids window with four tabs:
+It docks a window to the left of the Dungeons & Raids window with five tabs:
 
 - **Dungeons** ranks every dungeon in the season by how many of its drops
   would be upgrades for you at the key level you choose, and shows how many
@@ -15,6 +15,11 @@ It docks a window to the left of the Dungeons & Raids window with four tabs:
   drop for it, from dungeons, raid bosses or both, is listed, best stat fit
   first, each with where it comes from and a star. That is where you compare
   same-slot drops and pick the one to want.
+- **IO** shows your Mythic+ rating and plans the timed keys that reach a
+  target (2000, 2500, 3000 or a custom number). Several plans are offered,
+  from the fewest runs at higher keys to the most runs at the lowest keys;
+  the addon never asks you to pick a key level. Right-click a dungeon to
+  leave it out, click one for its key ladder.
 - **Settings**.
 
 Two questions, two stars. "Which key or boss gives me the most upgrades" is
@@ -34,8 +39,9 @@ Mythic: fully upgraded Myth), so a Heroic boss roll and a +10 dungeon roll
 are worth the same Myth 1/6 item.
 
 Premade Groups listings get a badge with the upgrade count (and a star when
-a wanted item drops there), and Mythic Keystone tooltips (your key in the
-bags, keystone links in chat) get the same lines at that key's own level.
+a wanted item drops there) plus the rating a timed run there would add, and
+Mythic Keystone tooltips (your key in the bags, keystone links in chat) get
+the same lines at that key's own level.
 
 ## What it does automatically
 
@@ -47,6 +53,9 @@ bags, keystone links in chat) get the same lines at that key's own level.
 - **Raids**: the season's raids and their bosses come from the journal's
   current-season tier; a boss's item level at a difficulty is read from its
   journal link, so later bosses that drop higher are judged higher.
+- **Rating**: your best run per dungeon (level, time, timed or not) and the
+  overall rating come from the game's own season data; the IO tab's plans
+  are recomputed only when they change.
 - **Drop item levels**: end-of-dungeon and Great Vault levels per key from the
   Mythic+ reward API, with a Season 2 table as fallback until the client has
   loaded the season's reward data.
@@ -85,6 +94,16 @@ bags, keystone links in chat) get the same lines at that key's own level.
 - **Items**: right-click a drop to exclude it (a bad trinket, or something you
   already received from a Voidcore, since those leave the roll pool).
 - **Sorting**: click a column header (Dungeon or Boss, Drops, Wanted).
+- **Rating target** (IO tab): 2000 / 2500 / 3000, or Custom with a stepper
+  in steps of 50. Starts at the next milestone above your rating.
+- **Runs** (IO tab): the plans that reach the target, one tab per number of
+  runs. The first is the fastest (fewest runs, higher keys), the last the
+  easiest (most runs, lowest keys); the easiest is selected by default.
+- **Max key** (IO tab): plans use no key above it. Automatic (grey) is your
+  highest timed key plus two; step it to set your own, right-click the box
+  to go back to automatic.
+- **Avoided dungeons** (IO tab): right-click a dungeon to leave it out of
+  the plans, right-click again to bring it back.
 - **Stat priority**: per spec, Manual or Auto in Settings. Manual is the
   default: the four stats sit in a row, best first, and start in the Auto
   order; left-click a stat to move it left, right-click to move it right.
@@ -105,7 +124,8 @@ bags, keystone links in chat) get the same lines at that key's own level.
   hide empty dungeons and bosses, wanted list sharing, weight profiles and stat priority,
   dock side (left, right, or free; a free window can be set to move with the
   Dungeons & Raids window for people who move that with another addon),
-  auto-show rules, LFG badges, keystone tooltips, scale, manual track shift.
+  auto-show rules, LFG badges, keystone tooltips, rating gain on listings
+  and keystones, scale, manual track shift.
 
 ## Look and feel
 
@@ -189,9 +209,10 @@ lua tests/harness.lua
 | `Tracks.lua` | Upgrade track ladder + self-calibration from equipped items |
 | `Gear.lua` | Equipped gear scan and tooltip parsing |
 | `Season.lua` | Season pool, reward/vault item levels, activity-to-dungeon mapping |
+| `Rating.lua` | Mythic+ rating per dungeon, timed-score model, run plans towards a target |
 | `Loot.lua` | Adventure Guide loot scanner (dungeons, raid bosses per difficulty) and cache |
 | `Evaluate.lua` | Upgrade classification (drop, and the Voidcore roll for tooltips), dungeon and boss ranking |
-| `UI.lua` | Main window (Dungeons, Raid and Gear tabs), docking (neighbour-aware) and Group Finder push |
+| `UI.lua` | Main window (Dungeons, Raid, Gear and IO tabs), docking (neighbour-aware) and Group Finder push |
 | `Options.lua` | Settings tab and the Settings > AddOns entry |
 | `LFGHook.lua` | Premade Groups badges and tooltip lines |
 
@@ -201,3 +222,9 @@ lua tests/harness.lua
 tracks with +3/+3/+4/+3/+3, 13 between tracks, +10 = 311 Hero 3/6, vault +10 =
 318 Myth 1/6). When a new season starts, the addon keeps working from the
 live APIs and your own items; update the table when the numbers are public.
+
+It also carries the Season 2 rating formula for a timed key: 155 at +2, 15
+per level, 15 more at +5, +7, +10 and +12, and up to 15 for finishing 40%
+under the timer. Plans count runs as timed exactly (no timer bonus). The
+formula is checked against the game's own score for your timed runs;
+`/sf status` reports how many matched.

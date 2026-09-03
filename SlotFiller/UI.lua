@@ -1,13 +1,15 @@
--- Slot Filler: main window. Four tabs (Dungeons, Raid, Gear, Settings) in a
--- shell that EllesmereUI paints when present (see Style.lua). Docks to the
--- left of the Dungeons & Raids window, tabs hanging under the frame like its
--- own.
+-- Slot Filler: main window. Five tabs (Dungeons, Raid, Gear, IO, Settings)
+-- in a shell that EllesmereUI paints when present (see Style.lua). Docks to
+-- the left of the Dungeons & Raids window, tabs hanging under the frame like
+-- its own.
 --
 -- Dungeons: dungeon rows that open into the drops they hold.
 -- Raid:     boss rows, judged at the difficulty picked on the tab's strip.
 -- Gear:     slot rows that open into every drop for that slot, from
 --           dungeons, raids or both, ordered by stat compatibility, so
 --           same-slot drops can be compared and starred.
+-- IO:       dungeon rows with the best run and the planned key that reach a
+--           target rating; rows open into a key ladder (Rating.lua).
 local _, ns = ...
 local Style = ns.Style
 
@@ -16,21 +18,27 @@ local FREE_HEIGHT = 520
 local PAD = 8            -- content inset from the window edge
 local TITLE_H = 25       -- EllesmereUI title band height
 local TOOLBAR_H = 68     -- spec/key row, weights row and the info line, shared by the list tabs
-local TAB_H, TAB_W = 22, 88
+local TAB_H, TAB_W = 22, 70
 local STRIP_H = 24       -- filter strip above a list's column header
 local SECTION_H = 22     -- raid name above its bosses
 local ROW_H = 28         -- dungeon / slot row
 local ITEM_H = 20        -- drop row under an expanded row
 local GUTTER = 12        -- scrollbar gutter right of a list
 local COL_DROPS, COL_WANTED = 56, 68
+local IO_HEADER_H = 52   -- IO tab: rating/target row and runs/max key row
+local COL_BEST, COL_RUN, COL_GAIN = 56, 44, 52
+local LADDER_ROWS = 5    -- key ladder under an expanded IO row
+local RUNS_TAB_W = 22
 
 local frame
 local dungeonRows, dungeonItems = {}, {}
 local raidRows, raidItems, raidHeaders = {}, {}, {}
 local gearRows, gearItems = {}, {}
+local ioRows, ioLadder = {}, {}
 ns.uiExpandedMapID = nil
 ns.uiExpandedEncounterID = nil
 ns.uiExpandedSlotID = nil
+ns.uiExpandedRatingMapID = nil
 
 local NONE, ILVL, TRACK, WANT = ns.UPGRADE_NONE, ns.UPGRADE_ILVL, ns.UPGRADE_TRACK, ns.UPGRADE_WANT
 local ARROW_ATLAS = "Azerite-PointingArrow"
@@ -298,7 +306,7 @@ ns.UI = { TextButton = TextButton, Check = Check, Tip = Tip, Dropdown = Dropdown
     StatProfileDropdown = StatProfileDropdown, RefreshStatProfileButton = RefreshStatProfileButton,
     IsMenuShown = function() return (menu and menu:IsShown()) and true or false end,
     -- row pools, for the test harness
-    Pools = { dungeonItems = dungeonItems, raidItems = raidItems, gearItems = gearItems } }
+    Pools = { dungeonItems = dungeonItems, raidItems = raidItems, gearItems = gearItems, ioRows = ioRows, ioLadder = ioLadder } }
 
 -- Tooltips show the Voidcore roll while Shift is held: redraw the hovered
 -- row's tooltip when Shift changes.
@@ -432,6 +440,7 @@ end
 local function TabStrip(parent, defs, w, onSelect)
     local tabs = CreateFrame("Frame", nil, parent)
     tabs:SetSize(#defs * w + (#defs - 1), 20)
+    tabs.Tabs = {}
     local prev
     for _, def in ipairs(defs) do
         local tab = CreateFrame("Button", nil, tabs)
@@ -441,13 +450,73 @@ local function TabStrip(parent, defs, w, onSelect)
         tab.Text:SetPoint("CENTER", 0, 0)
         tab.Text:SetText(def[2])
         tab.tabID = def[1]
-        tab:SetScript("OnClick", function()
-            Style.SelectTab(tabs, def[1])
-            onSelect(def[1])
+        tab:SetScript("OnClick", function(self)
+            Style.SelectTab(tabs, self.tabID)
+            onSelect(self.tabID)
         end)
         Style.Tab(tab)
         if def[3] then Tip(tab, "ANCHOR_TOP", def[2], def[3]) end
+        tabs.Tabs[def[1]] = tab
         prev = tab
+    end
+    return tabs
+end
+
+-- Plan picker for the IO tab: one tab per plan, labelled by its run count.
+-- SetPlans(plans, selected) relabels the tabs and shows one per plan.
+local function RunsStrip(parent, maxTabs, onSelect)
+    local tabs = CreateFrame("Frame", nil, parent)
+    tabs:SetSize(RUNS_TAB_W, 20)
+    tabs.Tabs = {}
+    local prev
+    for i = 1, maxTabs do
+        local tab = CreateFrame("Button", nil, tabs)
+        tab:SetSize(RUNS_TAB_W, 20)
+        if prev then tab:SetPoint("LEFT", prev, "RIGHT", 1, 0) else tab:SetPoint("LEFT", 0, 0) end
+        tab.Text = Style.Text(tab, 11)
+        tab.Text:SetPoint("CENTER", 0, 0)
+        tab.tabID = i
+        tab:SetScript("OnClick", function(self)
+            if not self.plan then return end
+            Style.SelectTab(tabs, self.tabID)
+            onSelect(self.plan)
+        end)
+        tab:SetScript("OnEnter", function(self)
+            local p = self.plan
+            if not p then return end
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            if p.partial then
+                GameTooltip:AddLine("Out of reach")
+                GameTooltip:AddLine(string.format("Every dungeon at +%d reaches %d.", p.maxLevel, ns:Round(p.reach or 0)), 0.8, 0.8, 0.8)
+            else
+                GameTooltip:AddLine(p.fastest and "Fastest" or p.easiest and "Easiest" or string.format("Plan %d of %d", p.index or 1, p.of or 1))
+                GameTooltip:AddLine(string.format("%d run%s, keys up to +%d: +%d, rating %d.", p.count, p.count == 1 and "" or "s", p.maxLevel,
+                    ns:Round(p.total), ns:Round((ns:OverallRating() or 0) + p.total)), 0.8, 0.8, 0.8)
+            end
+            GameTooltip:Show()
+        end)
+        tab:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        Style.Tab(tab)
+        tabs.Tabs[i] = tab
+        prev = tab
+    end
+    function tabs:SetPlans(plans, selected)
+        local n = math.min(#plans, maxTabs)
+        for i, tab in ipairs(self.Tabs) do
+            local p = plans[i]
+            tab.plan = p
+            if p and i <= n then
+                tab.tabID = p.count
+                tab.Text:SetText(p.partial and "Max" or tostring(p.count))
+                tab:Show()
+            else
+                tab.tabID = -i
+                tab:Hide()
+            end
+        end
+        self:SetWidth(math.max(1, n * RUNS_TAB_W + math.max(0, n - 1)))
+        local id = selected and selected.count or nil
+        if self.selectedTabID ~= id then Style.SelectTab(self, id) end
     end
     return tabs
 end
@@ -554,6 +623,96 @@ local function BuildGearPage(page)
 end
 
 -------------------------------------------------------------------------------
+-- IO page: rating and target, plan picker and key cap, then dungeon rows
+-------------------------------------------------------------------------------
+local function BuildIOPage(page)
+    local head = CreateFrame("Frame", nil, page)
+    head:SetPoint("TOPLEFT", 0, 0)
+    head:SetPoint("TOPRIGHT", -GUTTER, 0)
+    head:SetHeight(IO_HEADER_H)
+    page.Head = head
+
+    -- row 1: rating, target milestones, custom stepper, distance to go
+    local rating = Style.Text(head, 14)
+    rating:SetPoint("TOPLEFT", 4, -3)
+    rating:SetWidth(58)
+    rating:SetJustifyH("LEFT")
+    rating:SetWordWrap(false)
+    head.Rating = rating
+
+    local defs = {}
+    for _, m in ipairs(ns:RatingMilestones()) do
+        defs[#defs + 1] = { tostring(m), tostring(m), "Plan the runs that reach this rating." }
+    end
+    defs[#defs + 1] = { "custom", "Custom", "Any target, in steps of 50." }
+    head.TargetTabs = TabStrip(head, defs, 44, function(id)
+        if id == "custom" then
+            ns:StepRatingTarget(1)
+        else
+            ns:SetRatingTarget(tonumber(id))
+        end
+    end)
+    head.TargetTabs:SetPoint("TOPLEFT", 66, 0)
+    head.CustomTab = head.TargetTabs.Tabs.custom
+
+    local tPlus = TextButton(head, "+", 18, 20, 12)
+    tPlus:SetPoint("LEFT", head.TargetTabs, "RIGHT", 22, 0)
+    tPlus:SetScript("OnClick", function() ns:StepRatingTarget(1) end)
+    local tMinus = TextButton(head, "-", 18, 20, 12)
+    tMinus:SetPoint("RIGHT", tPlus, "LEFT", -1, 0)
+    tMinus:SetScript("OnClick", function() ns:StepRatingTarget(-1) end)
+    head.TargetPlus, head.TargetMinus = tPlus, tMinus
+    for _, b in ipairs({ tPlus, tMinus }) do Tip(b, "ANCHOR_BOTTOM", "Target rating", "Steps of 50.") end
+
+    local need = Style.Text(head, 11, 1, 1, 1, 0.6)
+    need:SetPoint("TOPRIGHT", 0, -4)
+    need:SetPoint("LEFT", tPlus, "RIGHT", 4, 0)
+    need:SetJustifyH("RIGHT")
+    need:SetWordWrap(false)
+    head.Need = need
+
+    -- row 2: plan picker, key cap
+    local runsLabel = Style.Text(head, 11, 1, 1, 1, 0.53)
+    runsLabel:SetPoint("TOPLEFT", 4, -30)
+    runsLabel:SetText("Runs")
+    head.RunsLabel = runsLabel
+    head.RunsTabs = RunsStrip(head, 8, function(plan) ns:SetRatingRuns(plan.count) end)
+    head.RunsTabs:SetPoint("LEFT", runsLabel, "RIGHT", 8, 0)
+
+    local kPlus = TextButton(head, "+", 20, 20, 12)
+    kPlus:SetPoint("TOPRIGHT", 0, -26)
+    kPlus:SetScript("OnClick", function() ns:StepRatingMaxKey(1) end)
+    local kBox = CreateFrame("Button", nil, head)
+    kBox:SetSize(34, 20)
+    kBox:SetPoint("RIGHT", kPlus, "LEFT", -1, 0)
+    Style.Panel(kBox, { inset = true })
+    kBox:RegisterForClicks("RightButtonUp")
+    kBox:SetScript("OnClick", function() ns:SetRatingMaxKey(nil) end)
+    local kText = Style.Text(kBox, 11)
+    kText:SetPoint("CENTER", 0, 0)
+    local kMinus = TextButton(head, "-", 20, 20, 12)
+    kMinus:SetPoint("RIGHT", kBox, "LEFT", -1, 0)
+    kMinus:SetScript("OnClick", function() ns:StepRatingMaxKey(-1) end)
+    local kLabel = Style.Text(head, 11, 1, 1, 1, 0.53)
+    kLabel:SetPoint("RIGHT", kMinus, "LEFT", -6, 0)
+    kLabel:SetText("Max key")
+    head.KeyPlus, head.KeyMinus, head.KeyBox, head.KeyText = kPlus, kMinus, kBox, kText
+    for _, b in ipairs({ kPlus, kMinus, kBox }) do
+        Tip(b, "ANCHOR_BOTTOM", "Max key", "Plans use no key above this. Grey: automatic, your highest timed key + 2. Right-click the box: back to automatic.")
+    end
+
+    local colHead = ColumnHeader(page, {
+        { "plan", "Dungeon", nil, "Click a dungeon for its key ladder. Right-click to avoid it. Click here to sort by the plan." },
+        { "best", "Best", COL_BEST, "Your best run this season: coloured when timed, grey when over time. Click to sort." },
+        { "run", "Run", COL_RUN, "The key to time in the selected plan." },
+        { "gain", "Gain", COL_GAIN, "Rating gained by timing that key. Click to sort." },
+    }, function(mode) ns.db.ioSort = mode end, IO_HEADER_H)
+    page.ColHead = colHead
+    page.List, page.Content = ListPanel(page, colHead, 18)
+    StatusLine(page)
+end
+
+-------------------------------------------------------------------------------
 -- Frame construction
 -------------------------------------------------------------------------------
 local function BuildFrame()
@@ -636,14 +795,16 @@ local function BuildFrame()
     BuildDungeonsPage(NewPage("dungeons", listTop))
     BuildRaidPage(NewPage("raid", listTop))
     BuildGearPage(NewPage("gear", listTop))
+    BuildIOPage(NewPage("io", TITLE_H + 6))
     ns:BuildSettingsPage(NewPage("settings", TITLE_H + 6))
 
     -- tab row hanging under the frame, like the Group Finder's own tabs
+    local tabDefs = { { "dungeons", "Dungeons" }, { "raid", "Raid" }, { "gear", "Gear" }, { "io", "IO" }, { "settings", "Settings" } }
     local tabs = CreateFrame("Frame", nil, frame)
     tabs:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", PAD, 1)
-    tabs:SetSize(4 * TAB_W + 3, TAB_H)
+    tabs:SetSize(#tabDefs * TAB_W + (#tabDefs - 1), TAB_H)
     frame.TabRow = tabs
-    for i, def in ipairs({ { "dungeons", "Dungeons" }, { "raid", "Raid" }, { "gear", "Gear" }, { "settings", "Settings" } }) do
+    for i, def in ipairs(tabDefs) do
         local tab = CreateFrame("Button", nil, tabs)
         tab:SetSize(TAB_W, TAB_H)
         tab:SetPoint("LEFT", (i - 1) * (TAB_W + 1), 0)
@@ -672,9 +833,12 @@ function ns:ShowPage(key)
         if k == key then p:Show() else p:Hide() end
     end
     CloseMenu()
-    if key == "settings" then frame.Toolbar:Hide() else frame.Toolbar:Show() end
+    -- the IO tab has its own header; the toolbar is a loot thing
+    if key == "settings" or key == "io" then frame.Toolbar:Hide() else frame.Toolbar:Show() end
     frame.page = key
     Style.SelectTab(frame.TabRow, key)
+    -- one request per visit, so the rating data is fresh; never from a refresh
+    if key == "io" then self:RequestRatingData() end
     self:RefreshWindow()
 end
 
@@ -751,6 +915,83 @@ local function NewTopRow(content, onClick, onRightClick, onEnter)
     row:SetScript("OnEnter", function(self) ns.hoveredTip = self; onEnter(self) end)
     row:SetScript("OnLeave", function() ns.hoveredTip = nil; GameTooltip:Hide() end)
     return row
+end
+
+-- IO tab row: icon, chevron, name, then Best / Run / Gain columns anchored
+-- like the column header.
+local function NewRatingRow(content, onClick, onRightClick, onEnter)
+    local row = CreateFrame("Button", nil, content)
+    row:SetHeight(ROW_H)
+    row.Bg = row:CreateTexture(nil, "BACKGROUND")
+    row.Bg:SetAllPoints()
+    row.Bg:SetColorTexture(1, 1, 1, 0)
+    row.Hover = row:CreateTexture(nil, "HIGHLIGHT")
+    row.Hover:SetAllPoints()
+    row.Hover:SetColorTexture(1, 1, 1, 0.06)
+    row.Icon = row:CreateTexture(nil, "ARTWORK")
+    row.Icon:SetSize(ROW_H - 6, ROW_H - 6)
+    row.Icon:SetPoint("LEFT", 4, 0)
+    Style.SquareIcon(row.Icon, row)
+    row.Border = row:CreateTexture(nil, "BACKGROUND", nil, 2)
+    row.Border:SetPoint("TOPLEFT", row.Icon, "TOPLEFT", -1, 1)
+    row.Border:SetPoint("BOTTOMRIGHT", row.Icon, "BOTTOMRIGHT", 1, -1)
+    row.Border:SetColorTexture(0, 0, 0, 1)
+    row.Arrow = row:CreateTexture(nil, "ARTWORK")
+    row.Arrow:SetAtlas(ARROW_ATLAS)
+    row.Arrow:SetSize(10, 7)
+    row.Arrow:SetPoint("LEFT", row.Icon, "RIGHT", 6, 0)
+    row.Arrow:SetVertexColor(1, 1, 1, 0.6)
+    row.Gain = Style.Text(row, 12)
+    row.Gain:SetPoint("RIGHT", -2, 0)
+    row.Gain:SetWidth(COL_GAIN)
+    row.Gain:SetJustifyH("CENTER")
+    row.Run = Style.Text(row, 12)
+    row.Run:SetPoint("RIGHT", row.Gain, "LEFT", -1, 0)
+    row.Run:SetWidth(COL_RUN)
+    row.Run:SetJustifyH("CENTER")
+    row.Best = Style.Text(row, 12)
+    row.Best:SetPoint("RIGHT", row.Run, "LEFT", -1, 0)
+    row.Best:SetWidth(COL_BEST)
+    row.Best:SetJustifyH("CENTER")
+    row.Name = Style.Text(row, 12)
+    row.Name:SetPoint("LEFT", row.Arrow, "RIGHT", 6, 0)
+    row.Name:SetPoint("RIGHT", row.Best, "LEFT", -4, 0)
+    row.Name:SetJustifyH("LEFT")
+    row.Name:SetWordWrap(false)
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row:SetScript("OnClick", function(self, button)
+        if button == "RightButton" then
+            if onRightClick then onRightClick(self) end
+        else
+            onClick(self)
+        end
+    end)
+    row:SetScript("OnEnter", onEnter)
+    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    return row
+end
+
+-- Key ladder row under an expanded IO row: level, score and gain.
+local function NewLadderRow(content)
+    local it = CreateFrame("Frame", nil, content)
+    it:SetHeight(ITEM_H)
+    it.Bg = it:CreateTexture(nil, "BACKGROUND")
+    it.Bg:SetAllPoints()
+    it.Bg:SetColorTexture(1, 1, 1, 0)
+    it.Gain = Style.Text(it, 11)
+    it.Gain:SetPoint("RIGHT", -2, 0)
+    it.Gain:SetWidth(COL_GAIN)
+    it.Gain:SetJustifyH("CENTER")
+    it.Score = Style.Text(it, 11)
+    it.Score:SetPoint("RIGHT", it.Gain, "LEFT", -1, 0)
+    it.Score:SetWidth(COL_RUN)
+    it.Score:SetJustifyH("CENTER")
+    it.Level = Style.Text(it, 11)
+    it.Level:SetPoint("LEFT", ROW_H + 6, 0)
+    it.Level:SetPoint("RIGHT", it.Score, "LEFT", -4, 0)
+    it.Level:SetJustifyH("LEFT")
+    it.Level:SetWordWrap(false)
+    return it
 end
 
 -- Raid name above its bosses when the season has more than one raid.
@@ -1682,14 +1923,236 @@ local function RefreshGear(page)
     content:SetHeight(math.max(y, 1))
 end
 
+-------------------------------------------------------------------------------
+-- IO tab
+-------------------------------------------------------------------------------
+local function ColorHex(color, fallback)
+    if type(color) == "table" and color.r then
+        return string.format("|cff%02x%02x%02x", (color.r or 1) * 255, (color.g or 1) * 255, (color.b or 1) * 255)
+    end
+    return fallback
+end
+
+local function ScoreHex(score)
+    if C_ChallengeMode and C_ChallengeMode.GetDungeonScoreRarityColor then
+        local ok, c = pcall(C_ChallengeMode.GetDungeonScoreRarityColor, score or 0)
+        if ok then return ColorHex(c, "|cffffffff") end
+    end
+    return "|cffffffff"
+end
+
+local function LevelHex(level)
+    if C_ChallengeMode and C_ChallengeMode.GetKeystoneLevelRarityColor then
+        local ok, c = pcall(C_ChallengeMode.GetKeystoneLevelRarityColor, level or 0)
+        if ok then return ColorHex(c, "|cffffffff") end
+    end
+    return "|cffffffff"
+end
+
+local function BestText(e)
+    if not e.hasRun then return "|cff444444-|r" end
+    if e.timed then return string.format("%s+%d|r", LevelHex(e.level), e.level) end
+    return string.format("|cff888888+%d|r", e.level)
+end
+
+function ns:ShowRatingTooltip(row)
+    local e, d = row.entry, row.dungeon
+    if not e or not d then return end
+    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(d.name)
+    if not e.hasRun then
+        GameTooltip:AddLine("Not run this season.", 0.7, 0.7, 0.7)
+    else
+        local when = e.durationSec and (" " .. self:FormatDuration(e.durationSec)) or ""
+        GameTooltip:AddLine(string.format("Best: +%d %s%s (%d)", e.level, e.timed and "timed" or "over time", when, self:Round(e.score)), 1, 1, 1)
+    end
+    if row.avoided then
+        GameTooltip:AddLine("|cffff5555Avoided|r: left out of the plans.", 1, 1, 1)
+    elseif row.run then
+        GameTooltip:AddLine(string.format("%sPlan|r: time a +%d for +%d.", Style.AccentHex(), row.run.level, self:Round(row.run.gain)), 1, 1, 1)
+    elseif row.hasPlan then
+        GameTooltip:AddLine("Not in this plan.", 0.7, 0.7, 0.7)
+    end
+    GameTooltip:AddLine("Click: key ladder.  Right-click: avoid.", 0.6, 0.6, 0.6)
+    GameTooltip:Show()
+end
+
+local function IOStatusText(info, plan)
+    if not info.ready then return "Waiting for rating data..." end
+    local hint = "Right-click a dungeon to avoid it."
+    if info.reached then return "Target reached  ·  " .. hint end
+    if info.partial and plan then
+        return string.format("+%d everywhere reaches %d  ·  %s", plan.maxLevel, ns:Round(plan.reach or 0), hint)
+    end
+    if plan then
+        return string.format("+%d to go  ·  %d run%s for +%d = %s%d|r  ·  %s", ns:Round(info.need or 0),
+            plan.count, plan.count == 1 and "" or "s", ns:Round(plan.total),
+            ScoreHex((info.overall or 0) + plan.total), ns:Round((info.overall or 0) + plan.total), hint)
+    end
+    return string.format("+%d to go  ·  %s", ns:Round(info.need or 0), hint)
+end
+
+local function RefreshIO(page)
+    local self = ns
+    local db = self.db
+    local head = page.Head
+    local plans, info = self:RatingPlans()
+    local plan = self:SelectedRatingPlan()
+    local accent = Style.AccentHex()
+
+    -- header: rating, target, distance
+    if info.ready then
+        head.Rating:SetText(ScoreHex(info.overall) .. tostring(self:Round(info.overall)) .. "|r")
+    else
+        head.Rating:SetText("|cff888888...|r")
+    end
+    local target, _, tabID = self:RatingTarget()
+    if head.TargetTabs.selectedTabID ~= tabID then Style.SelectTab(head.TargetTabs, tabID) end
+    head.CustomTab.Text:SetText(tabID == "custom" and tostring(target) or "Custom")
+    head.TargetPlus:SetShown(tabID == "custom")
+    head.TargetMinus:SetShown(tabID == "custom")
+    if not info.ready then
+        head.Need:SetText("")
+    elseif info.reached then
+        head.Need:SetText("|cff88ff88reached|r")
+    else
+        head.Need:SetText(string.format("+%d to go", self:Round(info.need)))
+    end
+    -- header: plans, key cap
+    head.RunsTabs:SetPlans(plans, plan)
+    head.RunsLabel:SetAlpha(#plans > 0 and 1 or 0.4)
+    local cap, capAuto = self:RatingMaxKey()
+    head.KeyText:SetText(string.format("%s+%d|r", capAuto and "|cff888888" or "|cffffffff", cap))
+
+    local sortMode = db.ioSort or "plan"
+    if sortMode ~= "best" and sortMode ~= "gain" and sortMode ~= "name" then sortMode = "plan" end
+    if page.ColHead.selectedTabID ~= sortMode then Style.SelectTab(page.ColHead, sortMode) end
+
+    -- rows
+    local entries = {}
+    for _, d in ipairs(self.dungeons) do
+        local mapID = d.challengeMapID
+        local e = self:DungeonRating(mapID)
+        entries[#entries + 1] = {
+            d = d, mapID = mapID, e = e,
+            run = plan and plan.byMap[mapID] or nil,
+            avoided = self:IsDungeonAvoided(mapID),
+            floorGain = e.floor and self:RatingGain(mapID, e.floor) or 0,
+        }
+    end
+    table.sort(entries, function(a, b)
+        if a.avoided ~= b.avoided then return b.avoided end
+        if sortMode == "name" then return a.d.name < b.d.name end
+        if sortMode == "best" then
+            if a.e.score ~= b.e.score then return a.e.score < b.e.score end
+            return a.d.name < b.d.name
+        end
+        if sortMode == "gain" then
+            local ga, gb = a.run and a.run.gain or a.floorGain, b.run and b.run.gain or b.floorGain
+            if (a.run ~= nil) ~= (b.run ~= nil) then return a.run ~= nil end
+            if ga ~= gb then return ga > gb end
+            return a.d.name < b.d.name
+        end
+        -- plan: planned runs first, highest key first, then the rest by score
+        if (a.run ~= nil) ~= (b.run ~= nil) then return a.run ~= nil end
+        if a.run and b.run then
+            if a.run.level ~= b.run.level then return a.run.level > b.run.level end
+            if a.run.gain ~= b.run.gain then return a.run.gain > b.run.gain end
+        elseif a.e.score ~= b.e.score then
+            return a.e.score < b.e.score
+        end
+        return a.d.name < b.d.name
+    end)
+
+    local y = 0
+    local rowIndex, ladderIndex = 0, 0
+    local content = page.Content
+    local width = content:GetWidth()
+    local minL, maxL = self:RatingLevelRange()
+    for _, entry in ipairs(entries) do
+        rowIndex = rowIndex + 1
+        local row = Acquire(ioRows, rowIndex, function()
+            return NewRatingRow(content, function(self2)
+                ns.uiExpandedRatingMapID = (ns.uiExpandedRatingMapID ~= self2.mapID) and self2.mapID or nil
+                ns:RefreshWindow()
+            end, function(self2)
+                ns:ToggleAvoidDungeon(self2.mapID)
+            end, function(self2) ns:ShowRatingTooltip(self2) end)
+        end)
+        local d, e, run = entry.d, entry.e, entry.run
+        row.mapID, row.dungeon, row.entry, row.run, row.avoided, row.hasPlan = entry.mapID, d, e, run, entry.avoided, plan ~= nil
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+        row:SetWidth(width)
+        row.Icon:SetTexture(DungeonIcon(d))
+        local dim = entry.avoided or (plan ~= nil and not run)
+        row.Icon:SetDesaturated(dim)
+        row.Name:SetAlpha(dim and 0.45 or 1)
+        row.Border:SetColorTexture(entry.avoided and 1 or 0, entry.avoided and 0.3 or 0, entry.avoided and 0.3 or 0, 1)
+        row.Name:SetText(d.name .. (entry.avoided and " |cff888888avoid|r" or ""))
+        local expanded = self.uiExpandedRatingMapID == entry.mapID
+        row.Arrow:SetRotation(expanded and 0 or math.rad(90))
+        row.Best:SetText(info.ready and BestText(e) or "|cff888888...|r")
+        row.Run:SetText(run and string.format("|cffffffff+%d|r", run.level) or "|cff444444-|r")
+        row.Gain:SetText(run and string.format("%s+%d|r", accent, self:Round(run.gain)) or "")
+        RowBackground(row, rowIndex, expanded, self.highlightMapID == entry.mapID)
+        y = y + ROW_H + 1
+        if expanded then
+            local first = e.floor
+            if first and info.ready then
+                local last = math.max(first + LADDER_ROWS - 1, run and (run.level + 1) or 0)
+                last = math.min(last, maxL)
+                for level = first, last do
+                    ladderIndex = ladderIndex + 1
+                    local it = Acquire(ioLadder, ladderIndex, function() return NewLadderRow(content) end)
+                    it:ClearAllPoints()
+                    it:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+                    it:SetWidth(width)
+                    local score = self:TimedScore(level)
+                    it.Level:SetText(string.format("%s+%d|r  |cff888888timed|r", LevelHex(level), level))
+                    it.Score:SetText(string.format("|cffffffff%d|r", self:Round(score)))
+                    it.Gain:SetText(string.format("%s+%d|r", accent, self:Round(score - e.score)))
+                    if run and run.level == level then
+                        local r, g, b = Style.Accent()
+                        it.Bg:SetColorTexture(r, g, b, 0.15)
+                    else
+                        it.Bg:SetColorTexture(1, 1, 1, 0)
+                    end
+                    y = y + ITEM_H
+                end
+            else
+                ladderIndex = ladderIndex + 1
+                local it = Acquire(ioLadder, ladderIndex, function() return NewLadderRow(content) end)
+                it:ClearAllPoints()
+                it:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+                it:SetWidth(width)
+                it.Level:SetText(info.ready and "|cff888888Nothing left to gain here.|r" or "|cff888888Waiting for rating data...|r")
+                it.Score:SetText("")
+                it.Gain:SetText("")
+                it.Bg:SetColorTexture(1, 1, 1, 0)
+                y = y + ITEM_H
+            end
+            y = y + 4
+        end
+    end
+    for i = rowIndex + 1, #ioRows do ioRows[i]:Hide() end
+    for i = ladderIndex + 1, #ioLadder do ioLadder[i]:Hide() end
+    content:SetHeight(math.max(y, 1))
+    page.Status:SetText(IOStatusText(info, plan))
+    page.Progress:Hide()
+end
+
 function ns:RefreshWindow()
     if not frame or not frame:IsShown() then return end
-    self.slotSummary = self:SlotSummary()
     local page = frame.page or "dungeons"
     if page == "settings" then
         self:RefreshOptionsPanel()
         return
+    elseif page == "io" then
+        RefreshIO(frame.Pages.io)
+        return
     end
+    self.slotSummary = self:SlotSummary()
     RefreshToolbar()
     if page == "dungeons" then
         RefreshDungeons(frame.Pages.dungeons)
@@ -1992,6 +2455,7 @@ ns:On("SCAN_PROGRESS", function(index, total, name)
     ns:RefreshWindow()
 end)
 ns:On("SETTINGS_CHANGED", function() ns:RefreshWindow() end)
+ns:On("RATING_UPDATED", function() ns:RefreshWindow() end)
 ns:On("SPEC_CHANGED", function() ns:RefreshWindow() end)
 ns:On("GEAR_UPDATED", function() ns:RefreshWindow() end)
 Style.OnLooksChanged(function() ns:RefreshWindow() end)
@@ -2008,6 +2472,11 @@ end
 function ns:PrintStatus()
     self:Print("Status")
     print("  Season id:", tostring(self:GetSeasonID()), " dungeons:", #self.dungeons)
+    local overall = self:OverallRating()
+    local chk = self.ratingCheck
+    print(string.format("  Rating: %s (formula: %d timed run(s) checked, %d off)%s",
+        overall and tostring(self:Round(overall)) or "not loaded", chk and chk.checked or 0, chk and chk.off or 0,
+        chk and chk.worst and string.format("; worst %s +%d: expected %.1f, game says %.1f", chk.worst.name, chk.worst.level, chk.worst.expected, chk.worst.actual) or ""))
     local ctx = self:GetDropContext()
     print(string.format("  Target key +%d -> ilvl %s (%s) %s", ctx.key, tostring(ctx.ilvl), ctx.source, TrackText(ctx.track, ctx.step)))
     print("  Tracks:")

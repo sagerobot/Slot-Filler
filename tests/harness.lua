@@ -55,6 +55,7 @@ function Widget:Hide()
     self._shown = false
     if was and self._scripts.OnHide then self._scripts.OnHide(self) end
 end
+function Widget:SetShown(v) if v then self:Show() else self:Hide() end end
 function Widget:IsShown() return self._shown end
 function Widget:IsVisible() return self._shown end
 function Widget:GetHeight() return self._h or 400 end
@@ -286,9 +287,32 @@ local MAPS = {
     [584] = { "The Blinding Vale", 2859 },
     [249] = { "Kings' Rest", 1762 },
 }
+-- Mythic+ rating: season bests per map (587 timed +10 in 1500 s, 584 depleted +12, 249 never run)
+_G.RATINGS = {
+    [587] = { intime = { level = 10, durationSec = 1500, dungeonScore = 326.25, completionDate = 0 } },
+    [584] = { overtime = { level = 12, durationSec = 2100, dungeonScore = 300, completionDate = 0 } },
+}
+_G.OVERALL_OVERRIDE = nil
+local function OverallScore()
+    if OVERALL_OVERRIDE then return OVERALL_OVERRIDE end
+    local sum = 0
+    for _, r in pairs(RATINGS) do
+        local best = 0
+        if r.intime then best = math.max(best, r.intime.dungeonScore) end
+        if r.overtime then best = math.max(best, r.overtime.dungeonScore) end
+        sum = sum + best
+    end
+    return sum
+end
 _G.C_ChallengeMode = {
     GetMapTable = function() local t = {} for id in pairs(MAPS) do table.insert(t, id) end table.sort(t) return t end,
     GetMapUIInfo = function(id) local m = MAPS[id]; if m then return m[1], id, 1800, 1, 1, m[2] end end,
+    GetOverallDungeonScore = OverallScore,
+    GetDungeonScoreRarityColor = function() return { r = 1, g = 0.5, b = 0 } end,
+    GetKeystoneLevelRarityColor = function() return { r = 0.64, g = 0.21, b = 0.93 } end,
+}
+_G.C_PlayerInfo = {
+    GetPlayerMythicPlusRatingSummary = function() return { currentSeasonScore = OverallScore(), runs = {} } end,
 }
 -- Season 2 curve
 local EOD = { [2] = 295, [3] = 295, [4] = 298, [5] = 302, [6] = 305, [7] = 305, [8] = 308, [9] = 308, [10] = 311 }
@@ -301,8 +325,13 @@ _G.C_MythicPlus = {
         return VAULT[k] or 318, EOD[k] or 311
     end,
     GetRewardLevelFromKeystoneLevel = function(k) if API_FLAT then return 302 end return VAULT[k] or 318 end,
-    RequestMapInfo = function() end,
+    RequestMapInfo = function() _G.REQUESTED_MAPINFO = (REQUESTED_MAPINFO or 0) + 1 end,
     RequestCurrentAffixes = function() end,
+    GetSeasonBestForMap = function(id)
+        local r = RATINGS[id]
+        if not r then return nil, nil end
+        return r.intime, r.overtime
+    end,
     RequestRewards = function() _G.REQUESTED_REWARDS = (REQUESTED_REWARDS or 0) + 1 end,
 }
 
@@ -327,8 +356,12 @@ local RAIDS = {
       bosses = { { id = 3001, name = "Nek'zali", step = 1 }, { id = 3002, name = "The Twin Fangs", step = 2 } } },
     { id = 1501, name = "The Tidebound Grotto", diffs = { [205] = true, [14] = true, [15] = true, [16] = true },
       bosses = { { id = 3010, name = "Nymrissa Wavecaller", step = 1 } } },
+    -- the season's world bosses: the journal calls Normal valid for them
+    -- (as seen in 12.1) and shows no difficulty selector
+    { id = 1502, name = "Midnight", diffs = { [205] = true, [14] = true }, display = false,
+      bosses = { { id = 3020, name = "Lu'ashal", step = 1 } } },
 }
-local RAID_LOOT = { [3001] = { 1001, 1005 }, [3002] = { 1008, 1009 }, [3010] = { 1003, 1002 } }
+local RAID_LOOT = { [3001] = { 1001, 1005 }, [3002] = { 1008, 1009 }, [3010] = { 1003, 1002 }, [3020] = { 1001 } }
 local RAID_TRACK = { [17] = 2, [205] = 2, [14] = 3, [15] = 4, [16] = 5 } -- difficulty -> track index
 local function RaidByID(id) for _, r in ipairs(RAIDS) do if r.id == id then return r end end end
 local function BossByID(id) for _, r in ipairs(RAIDS) do for _, b in ipairs(r.bosses) do if b.id == id then return b end end end end
@@ -342,7 +375,8 @@ _G.EJ_GetInstanceByIndex = function(i, isRaid)
         if ej.tier ~= 2 then return nil end
         local r = RAIDS[i]
         if not r then return nil end
-        return r.id, r.name, "", 1, 1, 1, 1, 0, "", true, 0
+        -- 12.1 order: the link precedes shouldDisplayDifficulty, then isRaid
+        return r.id, r.name, "", 1, 1, 1, 1, "[" .. r.name .. "]", r.display ~= false, true, 0
     end
     local inst = JOURNAL[ej.tier][i]
     if not inst then return nil end
@@ -427,7 +461,7 @@ LFGListFrame.SearchPanel.ScrollBox = NewWidget("Frame")
 -- Load the addon
 -------------------------------------------------------------------------------
 local ns = {}
-local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Loot.lua", "Evaluate.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
+local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Rating.lua", "Loot.lua", "Evaluate.lua", "UI.lua", "Options.lua", "LFGHook.lua" }
 for _, f in ipairs(files) do
     local chunk, err = loadfile(ADDON_DIR .. f)
     assert(chunk, err)
@@ -489,6 +523,7 @@ check(ns.dungeonByMapID[587].journalID == 1304, "journal instance via GetInstanc
 -- raids: the season's raids and bosses, loot per difficulty
 local raids = ns:GetRaids()
 check(#raids == 2 and raids[1].name == "Venomous Abyss" and #raids[1].bosses == 2 and #raids[2].bosses == 1, "season raids and bosses read from the journal (" .. #raids .. ")")
+check(raids[2].name == "The Tidebound Grotto", "the world-boss entry (no difficulty selector) is left out; the lair stays")
 local nek, twin, nym = raids[1].bosses[1], raids[1].bosses[2], raids[2].bosses[1]
 check(nek.loot.heroic and #nek.loot.heroic.items == 2 and nek.loot.lfr and nek.loot.normal and nek.loot.mythic, "boss loot scanned at every difficulty")
 check(raids[2].difficulties.lfr == 205 and nym.loot.lfr and #nym.loot.lfr.items == 2, "the lair's World difficulty fills the LFR slot")
@@ -800,6 +835,104 @@ local kt2 = { lines = {}, AddLine = function(self, text) table.insert(self.lines
 ns:AddKeystoneTooltip(kt2, 249, 5)
 check(#kt2.lines >= 2 and kt2.lines[2]:find("+5", 1, true), "keystone tooltip for a lower key")
 
+-- Mythic+ rating: score model
+check(ns:TimedScore(2) == 155 and ns:TimedScore(5) == 215 and ns:TimedScore(7) == 260 and ns:TimedScore(10) == 320 and ns:TimedScore(12) == 365,
+    "timed score table (+2 155, +5 215, +7 260, +10 320, +12 365)")
+check(ns:TimedScore(10, 1800, 1500) == 326.25, "timer bonus: 300 s under a 30 min timer = +6.25")
+check(ns:TimedScore(10, 1800, 1000) == 335, "timer bonus capped at +15")
+check(ns:TimedScore(10, 1800, 1900) == nil and ns:TimedScore(1) == 0, "over time is not modelled; below +2 scores nothing")
+
+-- rating data read from the client
+ns.ratingDirty = true
+local rating = ns:ReadRatings()
+check(rating.ready and rating.overall == 626.25, "overall rating read (" .. tostring(rating.overall) .. ")")
+local r587, r584, r249 = ns:DungeonRating(587), ns:DungeonRating(584), ns:DungeonRating(249)
+check(r587.timed and r587.level == 10 and r587.floor == 11, "timed +10 at 326.25: next gain from +11")
+check(r584.hasRun and not r584.timed and r584.level == 12 and r584.floor == 10, "depleted +12 at 300: a timed +10 already gains")
+check(not r249.hasRun and r249.score == 0 and r249.floor == 2, "never run: starts at +2")
+check(ns.ratingCheck and ns.ratingCheck.checked == 1 and ns.ratingCheck.off == 0, "formula matches the game's score for the timed run")
+check(ns:RatingGain(587, 12) == 38.75 and ns:RatingGain(587, 10) == 0, "gain at a level")
+
+-- plans: target 1200 (need 573.75), no cap
+ns:SetRatingMaxKey(30)
+ns:SetRatingTarget(1200)
+local plans, pinfo = ns:RatingPlans()
+local function PlanText(p)
+    local t = {}
+    for _, run in ipairs(p.runs) do t[#t + 1] = string.format("%d@%d", run.mapID, run.level) end
+    return table.concat(t, " ")
+end
+check(#plans == 3 and plans[1].count == 1 and plans[2].count == 2 and plans[3].count == 3, "three plans, one per run count (" .. #plans .. ")")
+check(PlanText(plans[1]) == "249@26", "fastest: one run at +26 (" .. PlanText(plans[1]) .. ")")
+check(PlanText(plans[2]) == "249@17 584@17", "two runs at +17 (" .. PlanText(plans[2]) .. ")")
+check(PlanText(plans[3]) == "249@15 584@14 587@14" and plans[3].total == 573.75, "easiest: three runs, lowest keys (" .. PlanText(plans[3]) .. ")")
+check(plans[1].maxLevel >= plans[2].maxLevel and plans[2].maxLevel >= plans[3].maxLevel, "max key never rises with more runs")
+check(plans[1].fastest and plans[3].easiest and not plans[2].fastest, "first plan is Fastest, last is Easiest")
+check(ns:SelectedRatingPlan() == plans[3], "the easiest plan is selected by default")
+ns:SetRatingRuns(2)
+check(ns:SelectedRatingPlan() == plans[2] and ns:PlannedRun(584).gain == 140 and ns:PlannedRun(587) == nil, "Runs picks the plan by count; planned run per dungeon")
+ns:SetRatingRuns(1)
+ns:SetRatingMaxKey(20)
+plans = ns:RatingPlans()
+check(#plans == 2 and plans[1].count == 2, "a max key of 20 drops the one-run plan")
+check(ns:SelectedRatingPlan() == plans[1], "an unavailable run count falls back to the next larger plan")
+ns:SetRatingRuns(nil)
+ns:SetRatingMaxKey(nil)
+local cap, capAuto = ns:RatingMaxKey()
+check(cap == 12 and capAuto, "automatic max key = highest timed key + 2 (" .. tostring(cap) .. ")")
+ns:SetRatingTarget(1000)
+plans = ns:RatingPlans()
+check(#plans == 2 and PlanText(plans[1]) == "249@12 584@11" and PlanText(plans[2]) == "249@11 584@11 587@11", "plans under the automatic cap (" .. PlanText(plans[1]) .. " / " .. PlanText(plans[2]) .. ")")
+ns:SetRatingTarget(1200)
+plans, pinfo = ns:RatingPlans()
+check(#plans == 1 and pinfo.partial and plans[1].partial and plans[1].maxLevel == 12 and plans[1].total == 468.75, "out of reach under the cap: one partial plan with everything at the cap")
+ns:SetRatingMaxKey(2)
+plans = ns:RatingPlans()
+check(#plans == 1 and plans[1].partial and PlanText(plans[1]) == "249@2" and plans[1].total == 155, "cap +2: partial plan is the one +2")
+ns:SetRatingMaxKey(30)
+ns:ToggleAvoidDungeon(249)
+ns:SetRatingTarget(650)
+plans = ns:RatingPlans()
+check(ns:IsDungeonAvoided(249) and #plans == 1 and PlanText(plans[1]) == "584@11" and plans[1].runs[1].gain == 35, "avoiding a dungeon: the depleted +12 is planned as a timed +11 (" .. PlanText(plans[1]) .. ")")
+ns:ToggleAvoidDungeon(249)
+plans = ns:RatingPlans()
+check(not ns:IsDungeonAvoided(249) and PlanText(plans[1]) == "249@2", "avoid toggles back")
+ns:SetRatingTarget(600)
+plans, pinfo = ns:RatingPlans()
+check(#plans == 0 and pinfo.reached, "target already reached: no plans")
+
+-- target: automatic milestone, custom stepping
+ns:SetRatingTarget(nil)
+local tgt, tauto, ttab = ns:RatingTarget()
+check(tgt == 2000 and tauto and ttab == "2000", "automatic target is the next milestone (" .. tostring(tgt) .. ")")
+OVERALL_OVERRIDE = 2100; ns.ratingDirty = true
+check(ns:RatingTarget() == 2500, "next milestone above 2100 is 2500")
+OVERALL_OVERRIDE = 3050; ns.ratingDirty = true
+check(ns:RatingTarget() == 3100, "past the last milestone: next hundred")
+OVERALL_OVERRIDE = nil; ns.ratingDirty = true
+ns:SetRatingTarget(2050)
+tgt, tauto, ttab = ns:RatingTarget()
+check(tgt == 2050 and not tauto and ttab == "custom", "a custom target")
+ns:StepRatingTarget(-1)
+check(select(3, ns:RatingTarget()) == "2000", "stepping onto a milestone selects its tab")
+ns:SetRatingTarget(nil)
+
+-- requests: planning never asks the server; a completed run asks once, after combat
+local mapInfoBefore = REQUESTED_MAPINFO or 0
+ns.ratingDirty = true
+ns:RatingPlans()
+ev(ns.eventFrame, "CHALLENGE_MODE_MAPS_UPDATE")
+RunTimers()
+check((REQUESTED_MAPINFO or 0) == mapInfoBefore, "reading ratings and planning never request map info")
+_G.InCombatLockdown = function() return true end
+ev(ns.eventFrame, "CHALLENGE_MODE_COMPLETED")
+RunTimers()
+check((REQUESTED_MAPINFO or 0) == mapInfoBefore and ns.ratingRequestPending == true, "a run finished in combat waits")
+_G.InCombatLockdown = function() return false end
+ev(ns.eventFrame, "PLAYER_REGEN_ENABLED")
+RunTimers()
+check((REQUESTED_MAPINFO or 0) == mapInfoBefore + 1 and not ns.ratingRequestPending, "map info requested once combat ends")
+
 -- stat priority: Manual mode by default, starting from the gear order until a click saves one
 local order, src = ns:GetStatPriority()
 check(ns:GetStatMode() == "manual" and ns:GetManualStatPriority() == nil, "Manual mode by default, nothing saved yet")
@@ -983,6 +1116,66 @@ check(pool[1].eval.item.itemID == 1004, "reopening the list applies the new orde
 ns:SetItemState(1004, nil)
 RunTimers()
 ns.uiExpandedMapID = nil
+
+-- IO tab
+ns:SetRatingMaxKey(nil)
+ns:SetRatingTarget(1000)
+local mapInfoBeforeIO = REQUESTED_MAPINFO or 0
+ns:ShowPage("io")
+check(ns:CurrentPage() == "io" and not SlotFillerFrame.Toolbar:IsShown(), "IO tab shown without the loot toolbar")
+check((REQUESTED_MAPINFO or 0) == mapInfoBeforeIO + 1, "opening the IO tab requests map info once")
+ns:RefreshWindow()
+check((REQUESTED_MAPINFO or 0) == mapInfoBeforeIO + 1, "refreshing the IO tab requests nothing")
+local ioPage = SlotFillerFrame.Pages.io
+check(ioPage.Head.Rating:GetText():find("626", 1, true) ~= nil, "IO header shows the rating")
+check(ioPage.Head.TargetTabs.selectedTabID == "custom" and ioPage.Head.TargetPlus:IsShown() and ioPage.Head.CustomTab.Text:GetText() == "1000",
+    "a custom target shows on the Custom tab with its stepper")
+check(ioPage.Head.RunsTabs.selectedTabID == 3 and ioPage.Head.RunsTabs.Tabs[2]:IsShown() and not ioPage.Head.RunsTabs.Tabs[3]:IsShown(),
+    "Runs strip: one tab per plan, the easiest selected")
+check(ioPage.Head.KeyText:GetText():find("+12", 1, true) ~= nil, "Max key box shows the automatic cap")
+check(ioPage.Status:GetText():find("^%+374 to go") and ioPage.Status:GetText():find("3 runs for +379 = ", 1, true) and ioPage.Status:GetText():find("1005|r", 1, true),
+    "status line shows the distance, the plan's total and the rating at the end (" .. tostring(ioPage.Status:GetText()) .. ")")
+ns:SetRatingRuns(2)
+check(ioPage.Head.RunsTabs.selectedTabID == 2, "Runs strip follows the selected plan")
+local ioRow = ns.UI.Pools.ioRows[1]
+check(ioRow and ioRow.mapID == 249 and ioRow.run and ioRow.run.level == 12, "planned runs come first, highest key on top")
+ioRow:GetScript("OnClick")(ioRow, "RightButton")
+check(ns:IsDungeonAvoided(249) and ns.UI.Pools.ioRows[1].mapID ~= 249, "right-click avoids the dungeon and drops it to the bottom")
+local avoidedRow = ns.UI.Pools.ioRows[3]
+avoidedRow:GetScript("OnClick")(avoidedRow, "RightButton")
+check(not ns:IsDungeonAvoided(249), "right-click again brings it back")
+ns.uiExpandedRatingMapID = 249
+ns:RefreshWindow()
+check(#ns.UI.Pools.ioLadder == 12 and ns.UI.Pools.ioLadder[1].Level:GetText():find("+2", 1, true) and ns.UI.Pools.ioLadder[12].Level:GetText():find("+13", 1, true),
+    "key ladder from +2 up to one past the planned +12 (" .. #ns.UI.Pools.ioLadder .. " rows)")
+ns.db.ioSort = "gain"
+ns:RefreshWindow()
+ns.db.ioSort = "best"
+ns:RefreshWindow()
+check(ns.UI.Pools.ioRows[1].mapID == 249 and ns.UI.Pools.ioRows[2].mapID == 584, "sorting by best puts the lowest score first")
+ns.db.ioSort = "plan"
+-- rating on group listings and keystones
+local part, plevel, pgain, planned = ns.RatingPartForDungeon(ns.dungeonByMapID[584])
+check(part and part:find("+35", 1, true) and plevel == 11 and planned, "listing badge: planned run gain")
+part, plevel, pgain, planned = ns.RatingPartForDungeon(ns.dungeonByMapID[587])
+check(part and part:find("+9", 1, true) and plevel == 11 and not planned, "listing badge: grey gain at the first key that gains")
+local kt3 = { lines = {}, AddLine = function(self, text) table.insert(self.lines, text) end, Show = function() end }
+ns:AddKeystoneTooltip(kt3, 587, 12)
+check(kt3.lines[#kt3.lines]:find("Rating: 326 -> 365 (+39) if timed", 1, true) ~= nil, "keystone tooltip: rating if timed (" .. tostring(kt3.lines[#kt3.lines]) .. ")")
+local kt4 = { lines = {}, AddLine = function(self, text) table.insert(self.lines, text) end, Show = function() end }
+ns:AddKeystoneTooltip(kt4, 587, 9)
+check(kt4.lines[#kt4.lines]:find("no gain at +9", 1, true) ~= nil, "keystone tooltip: a key below the best gains nothing")
+ns.db.ioBadge = false
+local kt5 = { lines = {}, AddLine = function(self, text) table.insert(self.lines, text) end, Show = function() end }
+ns:AddKeystoneTooltip(kt5, 587, 12)
+check(not kt5.lines[#kt5.lines]:find("Rating:", 1, true) and ns.RatingPartForDungeon(ns.dungeonByMapID[584]) == nil, "rating lines and badges off with the setting")
+ns.db.ioBadge = true
+ns:SetRatingTarget(nil)
+check(ioPage.Head.TargetTabs.selectedTabID == "2000" and not ioPage.Head.TargetPlus:IsShown(), "automatic target: milestone tab, no stepper")
+check(ioPage.Head.RunsTabs.Tabs[1].Text:GetText() == "Max" and ioPage.Status:GetText():find("everywhere reaches", 1, true) ~= nil,
+    "out of reach under the cap: the Max tab and the status line say so")
+ns:SetRatingRuns(nil)
+ns.uiExpandedRatingMapID = nil
 ns:ToggleOptionsPanel()
 check(ns:CurrentPage() == "settings", "Settings tab shown")
 ns:RefreshOptionsPanel()
@@ -999,7 +1192,7 @@ check(ns:GetStatPriority()[1] == after[1], "the leftmost stat cannot move furthe
 ns:SetStatPriority(nil)
 ns:SetStatMode("auto")
 ns:ToggleOptionsPanel()
-check(ns:CurrentPage() == "dungeons", "back to Dungeons")
+check(ns:CurrentPage() == "dungeons" and SlotFillerFrame.Toolbar:IsShown(), "back to Dungeons with the toolbar")
 ns:HideWindow(true)
 check(not ns:IsWindowShown(), "window hidden")
 

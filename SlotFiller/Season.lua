@@ -27,6 +27,16 @@ ns.SEASON_DATA_LATEST = {
     -- keyLevel -> Great Vault item level; Nebulous Voidcore rolls use this level
     vaultByKey = { [2] = 305, [3] = 305, [4] = 308, [5] = 308, [6] = 311, [7] = 315, [8] = 315, [9] = 315, [10] = 318 },
     maxKeyForRewards = 10,
+    -- Mythic+ rating for a timed run: base at +2, per level, an extra bonus at
+    -- each affix breakpoint, and up to timerBonus for finishing timerWindow
+    -- (40%) under the timer. Sources: Mr. Mythical / misti calculators (2026-09).
+    -- +2 155, +5 215, +7 260, +10 320, +12 365. Rating.lua checks this against
+    -- the game's own scores (/sf status).
+    score = {
+        base = 155, perLevel = 15, breakpoints = { 5, 7, 10, 12 }, breakpointBonus = 15,
+        timerBonus = 15, timerWindow = 0.4, minLevel = 2, maxLevel = 30,
+        milestones = { 2000, 2500, 3000 },
+    },
 }
 
 -------------------------------------------------------------------------------

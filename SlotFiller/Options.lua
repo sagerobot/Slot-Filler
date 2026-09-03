@@ -347,6 +347,9 @@ function ns:BuildSettingsPage(page)
     AddCheck("Upgrade lines on keystone tooltips",
         "Show the same lines on Mythic Keystone tooltips: your keystone in the bags and keystone links in chat, evaluated at that key's level.",
         "keystoneTooltip")
+    AddCheck("Rating gain on group listings and keystones",
+        "The rating a timed run would add, from the IO tab's plan, next to each group listing and on keystone tooltips at that key's level.",
+        "ioBadge")
 
     Header("Upgrade tracks")
     local trackText = Style.Text(c, 10, 1, 1, 1, 0.85)

@@ -7,7 +7,7 @@
 -- spec in the character's saved variables.
 local _, ns = ...
 
-local CACHE_VERSION = 4
+local CACHE_VERSION = 7
 local CACHE_MAX_AGE = 7 * 24 * 3600
 
 local DIFF_KEYSTONE = (DifficultyUtil and DifficultyUtil.ID and DifficultyUtil.ID.DungeonChallenge) or 8
@@ -352,9 +352,17 @@ local function ReadRaidList()
         EJ_SelectTier(tier)
         local index = 1
         while true do
-            local instanceID, name = EJ_GetInstanceByIndex(index, true)
+            local rets = { EJ_GetInstanceByIndex(index, true) }
+            local instanceID, name = rets[1], rets[2]
             if not instanceID then break end
-            local raid = { instanceID = instanceID, name = name, index = index, tier = tier, bosses = {} }
+            -- shouldDisplayDifficulty is the first boolean returned (isRaid
+            -- follows it); its position moved in 12.1, so it is found, not indexed.
+            local shouldDisplayDifficulty
+            for i = 3, #rets do
+                if type(rets[i]) == "boolean" then shouldDisplayDifficulty = rets[i]; break end
+            end
+            local raid = { instanceID = instanceID, name = name, index = index, tier = tier, bosses = {},
+                displaysDifficulty = shouldDisplayDifficulty }
             EJ_SelectInstance(instanceID)
             local b = 1
             while true do
@@ -369,7 +377,17 @@ local function ReadRaidList()
                 b = b + 1
             end
             raid.difficulties, raid.difficultyNames = RaidDifficultyIDs()
-            if #raid.bosses > 0 then table.insert(raids, raid) end
+            -- The season's world bosses sit in the journal as a raid that
+            -- offers Normal only (verified 12.1: "Midnight" has normal 14,
+            -- no heroic or mythic) and no difficulty selector; their gear is
+            -- below every raid track, so they are left out. The lair has
+            -- Heroic and Mythic too.
+            local instanced = (raid.difficulties.heroic or raid.difficulties.mythic)
+                and raid.displaysDifficulty ~= false
+            ns:Debug(string.format("Journal raid %s: difficulty selector %s, normal %s heroic %s mythic %s -> %s", tostring(name),
+                tostring(shouldDisplayDifficulty), tostring(raid.difficulties.normal), tostring(raid.difficulties.heroic),
+                tostring(raid.difficulties.mythic), instanced and "kept" or "left out"))
+            if #raid.bosses > 0 and instanced then table.insert(raids, raid) end
             index = index + 1
         end
         if #raids > 0 then break end

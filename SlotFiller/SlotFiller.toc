@@ -17,6 +17,7 @@ Gear.lua
 Stats.lua
 Links.lua
 Season.lua
+Rating.lua
 Loot.lua
 Evaluate.lua
 UI.lua
