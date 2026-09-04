@@ -1,23 +1,21 @@
 -- Slot Filler: secondary stat priority and stat weights.
 -- Two modes per spec, chosen in Settings (Manual is the default):
 --   manual  - the order the user arranged by clicking the stats. Until they
---             have, the chips show the auto order so there is something to
---             start from; the first click saves it.
---   auto    - weights: the active weight profile for the spec, a Pawn scale
---             string imported and saved under a name (real weights, so drops
---             also get a weighted value that includes the primary stat). A
---             spec can hold several profiles, e.g. Raid and Mythic+.
---             gear: without a profile, the stat you stacked most on equipped
---             items ranks first.
+--             have, the auto order stands in so there is something to start
+--             from; the first click saves it.
+--   auto    - the weight profile in use for the spec (a Pawn scale string
+--             imported and saved under a name; real weights, so drops also
+--             get a weighted value that includes the primary stat), or
+--             without one the stats stacked most on equipped items.
 -- The priority orders drops for the same slot and colours the stats column by
 -- how well a drop matches; weights add a value comparison in tooltips.
 local _, ns = ...
 
 ns.STATS = {
-    { key = "CRIT",    mod = "ITEM_MOD_CRIT_RATING_SHORT",    name = STAT_CRITICAL_STRIKE or "Critical Strike", short = "Cri" },
-    { key = "HASTE",   mod = "ITEM_MOD_HASTE_RATING_SHORT",   name = STAT_HASTE or "Haste",                     short = "Has" },
-    { key = "MASTERY", mod = "ITEM_MOD_MASTERY_RATING_SHORT", name = STAT_MASTERY or "Mastery",                 short = "Mas" },
-    { key = "VERS",    mod = "ITEM_MOD_VERSATILITY",          name = STAT_VERSATILITY or "Versatility",         short = "Ver" },
+    { key = "CRIT",    mod = "ITEM_MOD_CRIT_RATING_SHORT",    name = STAT_CRITICAL_STRIKE, short = "Cri" },
+    { key = "HASTE",   mod = "ITEM_MOD_HASTE_RATING_SHORT",   name = STAT_HASTE,           short = "Has" },
+    { key = "MASTERY", mod = "ITEM_MOD_MASTERY_RATING_SHORT", name = STAT_MASTERY,         short = "Mas" },
+    { key = "VERS",    mod = "ITEM_MOD_VERSATILITY",          name = STAT_VERSATILITY,     short = "Ver" },
 }
 ns.STAT_BY_KEY = {}
 ns.STAT_DEFAULT_ORDER = {}
@@ -39,7 +37,7 @@ ns.EXTRA_STAT_BY_KEY = {}
 for _, e in ipairs(ns.EXTRA_STATS) do ns.EXTRA_STAT_BY_KEY[e.key] = e end
 
 -- Pawn stat names (lower-cased) -> our keys.
-ns.PAWN_STAT_KEYS = {
+local PAWN_STAT_KEYS = {
     critrating = "CRIT", hasterating = "HASTE", masteryrating = "MASTERY", versatility = "VERS",
     intellect = "PRIMARY", agility = "PRIMARY", strength = "PRIMARY", stamina = "STAMINA",
     leech = "LEECH", avoidance = "AVOID", movementspeed = "SPEED",
@@ -53,9 +51,9 @@ local statCache = {}  -- link -> { key = amount } | false (nothing usable)
 -- switching profiles or specs never serves a value from another scale.
 local valueCache = setmetatable({}, { __mode = "k" })
 
-local function Num(v)
-    if type(v) == "number" and not ns.issecret(v) and v > 0 then return v end
-    return nil
+local function Positive(v)
+    v = ns.Num(v)
+    return v and v > 0 and v or nil
 end
 
 -- Stats on an item link (secondaries plus the extras above); nil until the
@@ -64,19 +62,17 @@ function ns:ItemStats(link)
     if type(link) ~= "string" then return nil end
     local cached = statCache[link]
     if cached ~= nil then return cached or nil end
-    local api = (C_Item and C_Item.GetItemStats) or GetItemStats
-    if not api then return nil end
-    local ok, raw = pcall(api, link)
-    if not ok or type(raw) ~= "table" or self.issecret(raw) then return nil end
+    local ok, raw = pcall(C_Item.GetItemStats, link)
+    if not ok or not self.Tbl(raw) then return nil end
     local stats, any = {}, false
     for _, s in ipairs(self.STATS) do
-        local v = Num(raw[s.mod])
+        local v = Positive(raw[s.mod])
         if v then stats[s.key] = v; any = true end
     end
     for _, e in ipairs(self.EXTRA_STATS) do
         local best
         for _, mod in ipairs(e.mods) do
-            local v = Num(raw[mod])
+            local v = Positive(raw[mod])
             if v and (not best or v > best) then best = v end
         end
         if best then stats[e.key] = best; any = true end
@@ -93,45 +89,6 @@ local function HasSecondaries(stats)
     if not stats then return false end
     for _, s in ipairs(ns.STATS) do if stats[s.key] then return true end end
     return false
-end
-
--------------------------------------------------------------------------------
--- Pawn scale strings
--- ( Pawn: v1: "Name": Class=Shaman, Spec=Restoration, Intellect=81.97, CritRating=46.19, ... )
--------------------------------------------------------------------------------
-local PAWN_CLOSED = [[Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.-)%s*%)%s*$]]
-local PAWN_OPEN   = [[Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.*)$]]
-
-function ns:ParsePawnString(text)
-    if type(text) ~= "string" then return nil, "empty" end
-    local version, name, body = text:match(PAWN_CLOSED)
-    if not body then
-        version, name, body = text:match(PAWN_OPEN)
-    end
-    if not body then return nil, "not a Pawn string" end
-    local scale = { name = name, version = tonumber(version), weights = {} }
-    local any = false
-    for key, value in body:gmatch("([%a_]+)%s*=%s*([^,%)]+)") do
-        value = value:gsub("^%s+", ""):gsub("%s+$", "")
-        local lower = key:lower()
-        if lower == "class" then
-            scale.class = value
-        elseif lower == "spec" then
-            scale.spec = value
-        else
-            local ours = self.PAWN_STAT_KEYS[lower]
-            local n = tonumber(value)
-            if ours and n then
-                if not scale.weights[ours] or n > scale.weights[ours] then
-                    scale.weights[ours] = n
-                    if ours == "PRIMARY" then scale.primary = key end -- "Intellect"
-                end
-                any = true
-            end
-        end
-    end
-    if not any then return nil, "no stat weights found" end
-    return scale
 end
 
 -- Two stat sets with the same secondaries in the same proportions: a
@@ -151,23 +108,51 @@ function ns:StatsAlike(a, b)
     return true
 end
 
--- "auto" or manual (nil) for a spec; the caller fires SETTINGS_CHANGED once.
-local function SetMode(self, specID, mode)
-    self.cdb.statMode = self.cdb.statMode or {}
-    self.cdb.statMode[specID] = mode == "auto" and "auto" or nil
+-------------------------------------------------------------------------------
+-- Pawn scale strings
+-- ( Pawn: v1: "Name": Class=Shaman, Spec=Restoration, Intellect=81.97, CritRating=46.19, ... )
+-------------------------------------------------------------------------------
+function ns:ParsePawnString(text)
+    if type(text) ~= "string" then return nil, "empty" end
+    local version, name, body = text:match([[Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.-)%s*%)%s*$]])
+    if not body then version, name, body = text:match([[Pawn:%s*v(%d+):%s*"([^"]*)"%s*:%s*(.*)$]]) end
+    if not body then return nil, "not a Pawn string" end
+    local scale = { name = name, version = tonumber(version), weights = {} }
+    local any = false
+    for key, value in body:gmatch("([%a_]+)%s*=%s*([^,%)]+)") do
+        value = value:gsub("^%s+", ""):gsub("%s+$", "")
+        local lower = key:lower()
+        if lower == "class" then
+            scale.class = value
+        elseif lower == "spec" then
+            scale.spec = value
+        else
+            local ours, n = PAWN_STAT_KEYS[lower], tonumber(value)
+            if ours and n then
+                if not scale.weights[ours] or n > scale.weights[ours] then
+                    scale.weights[ours] = n
+                    if ours == "PRIMARY" then scale.primary = key end -- "Intellect"
+                end
+                any = true
+            end
+        end
+    end
+    if not any then return nil, "no stat weights found" end
+    return scale
 end
 
 -------------------------------------------------------------------------------
 -- Weight profiles. Every imported scale is kept per spec under a name, so a
 -- healer can hold a raid set and a Mythic+ set and switch between them:
---   db.statProfiles[specID] = { scale, ... }
---       scale = { name, pawnName, class, spec, primary, imported, weights = { CRIT = n, ... } }
---   db.statProfile[specID]  = index of the active one; nil = none (rank by gear)
+--   cdb.statProfiles[specID] = { scale, ... }
+--       scale = { name, pawnName, class, spec, primary, imported, weights = { CRIT = n, ... },
+--                 gear = snapshot the weights were made for, setName = equipment set followed,
+--                 amrSetup = Ask Mr. Robot setup label }
+--   cdb.statProfile[specID]  = index of the active one; nil = none (rank by gear)
 -------------------------------------------------------------------------------
 local function ProfileList(self, specID)
     specID = specID or self:GetEvalSpecID()
     if not specID or not self.cdb then return nil end
-    self.cdb.statProfiles = self.cdb.statProfiles or {}
     local list = self.cdb.statProfiles[specID]
     if not list then list = {}; self.cdb.statProfiles[specID] = list end
     return list, specID
@@ -178,7 +163,11 @@ local function CleanName(name)
     return (name:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
--- Saved profiles for the evaluated spec (or specID); may be empty.
+-- "auto" or manual (nil) for a spec; the caller fires SETTINGS_CHANGED once.
+local function SetMode(self, specID, mode)
+    self.cdb.statMode[specID] = mode == "auto" and "auto" or nil
+end
+
 function ns:GetStatProfiles(specID)
     return ProfileList(self, specID) or {}
 end
@@ -187,19 +176,17 @@ end
 function ns:GetActiveStatProfile()
     local list, specID = ProfileList(self)
     if not list then return nil end
-    local i = self.cdb.statProfile and self.cdb.statProfile[specID]
+    local i = self.cdb.statProfile[specID]
     local scale = i and list[i]
     if type(scale) == "table" and type(scale.weights) == "table" then return i, scale end
     return nil
 end
 
--- Active scale for the evaluated spec, or nil.
 function ns:GetStatWeights()
     local _, scale = self:GetActiveStatProfile()
     return scale
 end
 
--- "Raid", or nil when no profile is active.
 function ns:StatProfileName()
     local _, scale = self:GetActiveStatProfile()
     return scale and scale.name or nil
@@ -208,9 +195,7 @@ end
 -- Switches the evaluated spec to profile `index`; nil = none.
 function ns:SetActiveStatProfile(index)
     local list, specID = ProfileList(self)
-    if not list then return false end
-    if index ~= nil and not list[index] then return false end
-    self.cdb.statProfile = self.cdb.statProfile or {}
+    if not list or (index ~= nil and not list[index]) then return false end
     self.cdb.statProfile[specID] = index
     self:Fire("SETTINGS_CHANGED")
     return true
@@ -234,11 +219,11 @@ end
 -- the same Ask Mr. Robot setup, or the name given. nil for a new one.
 local function Replaces(self, list, scale, name)
     local pawn = type(scale.pawnName) == "string" and scale.pawnName:lower() or nil
-    local setup = self.AmrSetupFor and self:AmrSetupFor(scale) or nil
+    local setup = self:AmrSetupFor(scale)
     local lname = name ~= "" and name:lower() or nil
     for i, old in ipairs(list) do
         if pawn and type(old.pawnName) == "string" and old.pawnName:lower() == pawn then return i, old end
-        if setup and old.amrSetup and old.amrSetup == setup.label then return i, old end
+        if setup and old.amrSetup == setup.label then return i, old end
         if lname and type(old.name) == "string" and old.name:lower() == lname then return i, old end
     end
     return nil
@@ -257,29 +242,25 @@ function ns:AddStatProfile(scale, name)
     if old then
         -- the old table stays (others may hold it); its contents are the new
         local keep = name ~= "" and name or old.name
-        for k in pairs(old) do old[k] = nil end
+        wipe(old)
         for k, v in pairs(scale) do old[k] = v end
         old.name = keep
-        old.imported = time()
-        old.gear = self:GearSnapshot()
-        old.setName = self:StatProfileSet(old) or self:EquippedSetName()
         scale = old
     else
         if name == "" then name = CleanName(scale.pawnName) end
         if name == "" then name = "Profile " .. (#list + 1) end
         scale.name = name
-        scale.imported = scale.imported or time()
-        -- the gear the weights were made for, to say when it has changed, and
-        -- the equipment set they belong to
-        scale.gear = scale.gear or self:GearSnapshot()
-        scale.setName = scale.setName or self:StatProfileSet(scale) or self:EquippedSetName()
         list[#list + 1] = scale
         index = #list
     end
-    -- an Ask Mr. Robot setup of the same name: its gear is what the
-    -- weights are for
-    if self.LinkProfilesToAmr then self:LinkProfilesToAmr() end
-    -- Pasting weights means "use these": the order follows them from now on.
+    -- the gear the weights were made for, to say when it has changed, and
+    -- the equipment set they belong to
+    scale.imported = time()
+    scale.gear = self:GearSnapshot()
+    scale.setName = self:StatProfileSet(scale) or self:EquippedSetName()
+    -- an Ask Mr. Robot setup of the same name: its gear is what the weights are for
+    self:LinkProfilesToAmr()
+    -- pasting weights means "use these": the order follows them from now on
     SetMode(self, specID, "auto")
     self:SetActiveStatProfile(index)
     return index, scale
@@ -295,57 +276,30 @@ function ns:RenameStatProfile(index, name)
     return true
 end
 
--- Removes a profile. Deleting the active one leaves the spec with none; an
--- active profile after it keeps being active (its index shifts down).
+-- Deleting the active profile leaves the spec with none; an active profile
+-- after it keeps being active (its index shifts down).
 function ns:DeleteStatProfile(index)
     local list, specID = ProfileList(self)
     if not list or not list[index] then return false end
     table.remove(list, index)
-    local active = self.cdb.statProfile and self.cdb.statProfile[specID]
-    if active then
-        if active == index then
-            active = nil
-        elseif active > index then
-            active = active - 1
-        end
-        self.cdb.statProfile[specID] = active
+    local active = self.cdb.statProfile[specID]
+    if active == index then
+        self.cdb.statProfile[specID] = nil
+    elseif active and active > index then
+        self.cdb.statProfile[specID] = active - 1
     end
     self:Fire("SETTINGS_CHANGED")
     return true
 end
 
--- nil = use no profile for the evaluated spec (the saved profiles stay);
--- a scale table is saved as a new profile and switched to.
-function ns:SetStatWeights(scale)
-    if scale == nil then
-        self:SetActiveStatProfile(nil)
-    else
-        self:AddStatProfile(scale)
-    end
-end
-
--- Parses a Pawn string and saves it as a new, active profile for the
--- evaluated spec. Returns the scale and its index, or nil and a reason.
+-- Parses a Pawn string and saves it as the active profile for the evaluated
+-- spec. Returns the scale and its index, or nil and a reason.
 function ns:ImportPawnString(text, name)
     local scale, err = self:ParsePawnString(text)
     if not scale then return nil, err end
     local index, stored = self:AddStatProfile(scale, name)
     if not index then return nil, "no spec to save it for" end
-    return stored or scale, index
-end
-
--- What is worn now, per slot: { [slotID] = { itemID, ilvl, name } }; nil
--- before the gear has been scanned.
-function ns:GearSnapshot()
-    if not self.gearScanned then return nil end
-    local snap = {}
-    for _, s in ipairs(self.SLOTS) do
-        local g = self.gear[s.id]
-        if g and not g.empty and g.itemID then
-            snap[s.id] = { itemID = g.itemID, ilvl = g.ilvl or 0, name = g.link and g.link:match("%[(.-)%]") or nil }
-        end
-    end
-    return snap
+    return stored, index
 end
 
 -- Slots worn differently from the gear a profile was made for:
@@ -359,9 +313,7 @@ function ns:StatProfileGearDiff(scale)
         local was, now = snap[s.id], self.gear[s.id]
         local wasID = was and was.itemID or nil
         local nowID = now and not now.empty and now.itemID or nil
-        if wasID ~= nowID then
-            diff[#diff + 1] = { slotID = s.id, from = was, to = (nowID and now) or nil }
-        end
+        if wasID ~= nowID then diff[#diff + 1] = { slotID = s.id, from = was, to = nowID and now or nil } end
     end
     return diff
 end
@@ -369,28 +321,23 @@ end
 -------------------------------------------------------------------------------
 -- Equipment sets: a profile follows the set it was made for
 -------------------------------------------------------------------------------
-function ns:EquipmentSetNames()
-    local names = {}
-    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetIDs and C_EquipmentSet.GetEquipmentSetInfo) then return names end
+-- Every equipment set's name, and the name of the one worn now (or nil).
+local function EquipmentSets()
+    local names, worn = {}, nil
+    if not C_EquipmentSet then return names, worn end
     local ok, ids = pcall(C_EquipmentSet.GetEquipmentSetIDs)
-    if not ok or type(ids) ~= "table" then return names end
-    for _, id in ipairs(ids) do
-        local ok2, name = pcall(C_EquipmentSet.GetEquipmentSetInfo, id)
-        if ok2 and type(name) == "string" then names[#names + 1] = name end
+    for _, id in ipairs(ok and type(ids) == "table" and ids or {}) do
+        local ok2, name, _, _, isEquipped = pcall(C_EquipmentSet.GetEquipmentSetInfo, id)
+        if ok2 and type(name) == "string" then
+            names[#names + 1] = name
+            if isEquipped == true then worn = name end
+        end
     end
-    return names
+    return names, worn
 end
 
--- The equipment set worn right now, by the game's own equipped flag.
 function ns:EquippedSetName()
-    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetIDs and C_EquipmentSet.GetEquipmentSetInfo) then return nil end
-    local ok, ids = pcall(C_EquipmentSet.GetEquipmentSetIDs)
-    if not ok or type(ids) ~= "table" then return nil end
-    for _, id in ipairs(ids) do
-        local ok2, name, _, _, isEquipped = pcall(C_EquipmentSet.GetEquipmentSetInfo, id)
-        if ok2 and isEquipped == true and type(name) == "string" then return name end
-    end
-    return nil
+    return (select(2, EquipmentSets()))
 end
 
 -- The set a profile follows: the one recorded at import, else the set
@@ -411,18 +358,17 @@ end
 
 function ns:StatProfileSet(scale)
     if not scale then return nil end
-    return SetFor(scale, self:EquipmentSetNames())
+    return SetFor(scale, (EquipmentSets()))
 end
 
 -- Switches to the profile that follows the worn equipment set, if there
 -- is one for this spec. Returns its index, or nil.
 function ns:FollowEquipmentSet()
-    local set = self:EquippedSetName()
-    if not set then return nil end
-    local names = self:EquipmentSetNames()
+    local names, worn = EquipmentSets()
+    if not worn then return nil end
     local active = self:GetActiveStatProfile()
     for i, scale in ipairs(self:GetStatProfiles()) do
-        if SetFor(scale, names) == set then
+        if SetFor(scale, names) == worn then
             if active ~= i then self:SetActiveStatProfile(i) end
             return i
         end
@@ -452,10 +398,11 @@ end
 -------------------------------------------------------------------------------
 -- Priority order
 -------------------------------------------------------------------------------
-local function StableOrder(self, score)
+-- The four stats by score, ties in the default order.
+local function StableOrder(score)
     local index = {}
-    for i, key in ipairs(self.STAT_DEFAULT_ORDER) do index[key] = i end
-    local order = { unpack(self.STAT_DEFAULT_ORDER) }
+    for i, key in ipairs(ns.STAT_DEFAULT_ORDER) do index[key] = i end
+    local order = { unpack(ns.STAT_DEFAULT_ORDER) }
     table.sort(order, function(a, b)
         local sa, sb = score[a] or 0, score[b] or 0
         if sa ~= sb then return sa > sb end
@@ -464,23 +411,19 @@ local function StableOrder(self, score)
     return order
 end
 
--- Ranks the four secondaries by their total on equipped items. Returns the
--- order and the totals, or nil when nothing equipped carries secondaries.
+-- Ranks the four secondaries by their total on equipped items, or nil when
+-- nothing equipped carries secondaries.
 function ns:StatPriorityFromGear()
     local totals, any = {}, false
-    for _, s in ipairs(self.STATS) do totals[s.key] = 0 end
     for _, slot in ipairs(self.SLOTS) do
-        local g = self.gear and self.gear[slot.id]
+        local g = self.gear[slot.id]
         local stats = g and not g.empty and self:ItemStats(g.link)
-        if stats then
-            for _, s in ipairs(self.STATS) do
-                local v = stats[s.key]
-                if v then totals[s.key] = totals[s.key] + v; any = true end
-            end
+        for _, s in ipairs(stats and self.STATS or {}) do
+            if stats[s.key] then totals[s.key] = (totals[s.key] or 0) + stats[s.key]; any = true end
         end
     end
     if not any then return nil end
-    return StableOrder(self, totals), totals
+    return StableOrder(totals)
 end
 
 local function ValidOrder(t)
@@ -496,7 +439,7 @@ end
 -- "manual" (default) or "auto" for the evaluated spec.
 function ns:GetStatMode()
     local specID = self:GetEvalSpecID()
-    local mode = self.cdb and self.cdb.statMode and specID and self.cdb.statMode[specID]
+    local mode = self.cdb and specID and self.cdb.statMode[specID]
     return mode == "auto" and "auto" or "manual"
 end
 
@@ -511,21 +454,20 @@ end
 -- The saved manual order for the evaluated spec, or nil.
 function ns:GetManualStatPriority()
     local specID = self:GetEvalSpecID()
-    local manual = self.cdb and self.cdb.statPrio and specID and self.cdb.statPrio[specID]
+    local manual = self.cdb and specID and self.cdb.statPrio[specID]
     return ValidOrder(manual) and manual or nil
 end
 
--- Effective priority for the evaluated spec. Returns order, source
--- ("manual" | "weights" | "gear") or nil when there is nothing to go on. In
--- manual mode before any click, the auto order stands in (and is reported as
--- what it is) so the first click has something to start from.
+-- Effective priority for the evaluated spec: order, source ("manual" |
+-- "weights" | "gear"), or nil when there is nothing to go on. In manual mode
+-- before any click, the auto order stands in (reported as what it is).
 function ns:GetStatPriority()
     if self:GetStatMode() == "manual" then
         local manual = self:GetManualStatPriority()
         if manual then return manual, "manual" end
     end
     local scale = self:GetStatWeights()
-    if scale then return StableOrder(self, scale.weights), "weights" end
+    if scale then return StableOrder(scale.weights), "weights" end
     local order = self:StatPriorityFromGear()
     if order then return order, "gear" end
     return nil, nil
@@ -537,7 +479,6 @@ function ns:SetStatPriority(order)
     local specID = self:GetEvalSpecID()
     if not specID or not self.cdb then return end
     if order ~= nil and not ValidOrder(order) then return end
-    self.cdb.statPrio = self.cdb.statPrio or {}
     self.cdb.statPrio[specID] = order
     if order then SetMode(self, specID, "manual") end
     self:Fire("SETTINGS_CHANGED")
@@ -546,8 +487,11 @@ end
 -------------------------------------------------------------------------------
 -- Fit and value
 -------------------------------------------------------------------------------
--- Per-secondary weights: from the scale when given, else by rank in the order.
-function ns:SecondaryWeights(prio, scale)
+-- 0..1: where the item's secondary rating sits between the worst stat (0)
+-- and the best stat (1), by the scale's weights when given, else by rank in
+-- the order. nil without stats or a priority.
+function ns:StatFit(stats, prio, scale)
+    if not HasSecondaries(stats) then return nil end
     local w = {}
     if scale and scale.weights then
         for _, s in ipairs(self.STATS) do w[s.key] = scale.weights[s.key] or 0 end
@@ -556,15 +500,6 @@ function ns:SecondaryWeights(prio, scale)
     else
         return nil
     end
-    return w
-end
-
--- 0..1: where the item's secondary rating sits between the worst stat (0)
--- and the best stat (1). nil without stats or a priority.
-function ns:StatFit(stats, prio, scale)
-    if not HasSecondaries(stats) then return nil end
-    local w = self:SecondaryWeights(prio, scale)
-    if not w then return nil end
     local wmin, wmax
     for _, s in ipairs(self.STATS) do
         local v = w[s.key] or 0
@@ -574,10 +509,7 @@ function ns:StatFit(stats, prio, scale)
     local sum, weighted = 0, 0
     for _, s in ipairs(self.STATS) do
         local v = stats[s.key]
-        if v then
-            sum = sum + v
-            weighted = weighted + v * (w[s.key] or 0)
-        end
+        if v then sum, weighted = sum + v, weighted + v * (w[s.key] or 0) end
     end
     if sum == 0 then return nil end
     if wmax <= wmin then return 0.5 end
@@ -663,12 +595,4 @@ function ns:StatWeightsText(scale, short)
         parts[#parts + 1] = string.format(v >= 10 and "%s %.0f" or "%s %.1f", label, v)
     end
     return table.concat(parts, ", ")
-end
-
--- Short description of where the priority comes from.
-function ns:StatSourceText(source, scale)
-    if source == "manual" then return "manual" end
-    if source == "weights" then return "profile: " .. tostring(scale and scale.name or "?") end
-    if source == "gear" then return "from gear" end
-    return "not set"
 end

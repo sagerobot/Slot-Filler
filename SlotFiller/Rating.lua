@@ -6,27 +6,7 @@
 -- is called when the IO tab opens and a few seconds after a completed key.
 local _, ns = ...
 
--- Used when the season table carries no score block.
-local DEFAULT_SCORE = {
-    base = 155, perLevel = 15, breakpoints = { 5, 7, 10, 12 }, breakpointBonus = 15,
-    timerBonus = 15, timerWindow = 0.4, minLevel = 2, maxLevel = 30,
-    milestones = { 2000, 2500, 3000 },
-}
-
-local function ScoreData()
-    local data = ns:GetSeasonData()
-    return data and data.score or DEFAULT_SCORE
-end
-
-local function Num(v)
-    if type(v) == "number" and not ns.issecret(v) then return v end
-    return nil
-end
-
-local function Tbl(v)
-    if type(v) == "table" and not ns.issecret(v) then return v end
-    return nil
-end
+local Num, Tbl = ns.Num, ns.Tbl
 
 -------------------------------------------------------------------------------
 -- Score model
@@ -35,7 +15,7 @@ end
 -- bonus is added (linear up to timerWindow under the limit); a duration past
 -- the limit returns nil (the game reports depleted scores, we do not model them).
 function ns:TimedScore(level, timeLimit, durationSec)
-    local s = ScoreData()
+    local s = self.SEASON.score
     level = tonumber(level) or 0
     if level < s.minLevel then return 0 end
     local score = s.base + s.perLevel * (level - s.minLevel)
@@ -44,22 +24,20 @@ function ns:TimedScore(level, timeLimit, durationSec)
     end
     if timeLimit and durationSec and timeLimit > 0 then
         if durationSec > timeLimit then return nil end
-        local under = (timeLimit - durationSec) / (s.timerWindow * timeLimit)
-        score = score + s.timerBonus * math.min(1, under)
+        score = score + s.timerBonus * math.min(1, (timeLimit - durationSec) / (s.timerWindow * timeLimit))
     end
     return score
 end
 
 function ns:RatingMilestones()
-    return ScoreData().milestones or DEFAULT_SCORE.milestones
+    return self.SEASON.score.milestones
 end
 
 function ns:RatingLevelRange()
-    local s = ScoreData()
-    return s.minLevel, s.maxLevel
+    return self.SEASON.score.minLevel, self.SEASON.score.maxLevel
 end
 
--- Lowest level whose timed score beats `score`; nil when none does.
+-- The lowest level whose timed score beats `score`; nil when none does.
 local function FloorLevel(score)
     local minL, maxL = ns:RatingLevelRange()
     for level = minL, maxL do
@@ -82,15 +60,12 @@ ns.ratingDirty = true
 local planCache = {}
 
 local function ZeroEntry()
-    local minL = ns:RatingLevelRange()
-    return { score = 0, hasRun = false, floor = minL }
+    return { score = 0, hasRun = false, floor = (ns:RatingLevelRange()) }
 end
 
 local function ReadSummary()
-    if not (C_PlayerInfo and C_PlayerInfo.GetPlayerMythicPlusRatingSummary) then return nil end
     local ok, summary = pcall(C_PlayerInfo.GetPlayerMythicPlusRatingSummary, "player")
-    if not ok then return nil end
-    summary = Tbl(summary)
+    summary = ok and Tbl(summary)
     if not summary then return nil end
     local byMap = {}
     for _, run in ipairs(Tbl(summary.runs) or {}) do
@@ -101,16 +76,9 @@ local function ReadSummary()
     return { overall = Num(summary.currentSeasonScore), byMap = byMap }
 end
 
-local function ReadBest(mapID)
-    if not (C_MythicPlus and C_MythicPlus.GetSeasonBestForMap) then return nil, nil end
-    local ok, intime, overtime = pcall(C_MythicPlus.GetSeasonBestForMap, mapID)
-    if not ok then return nil, nil end
-    return Tbl(intime), Tbl(overtime)
-end
-
 local function RunEntry(info)
-    if not info then return nil end
-    local score = Num(info.dungeonScore)
+    info = Tbl(info)
+    local score = info and Num(info.dungeonScore)
     if not score then return nil end
     return { score = score, level = Num(info.level) or 0, durationSec = Num(info.durationSec) }
 end
@@ -141,18 +109,13 @@ end
 
 function ns:ReadRatings()
     if self.rating and not self.ratingDirty then return self.rating end
-    local byMap, parts = {}, {}
-    local summary
-    local overall
-    local timedMax
-    if C_ChallengeMode and C_ChallengeMode.GetOverallDungeonScore then
-        local ok, v = pcall(C_ChallengeMode.GetOverallDungeonScore)
-        if ok then overall = Num(v) end
-    end
+    local byMap, parts, summary, timedMax = {}, {}, nil, nil
+    local ok, v = pcall(C_ChallengeMode.GetOverallDungeonScore)
+    local overall = ok and Num(v) or nil
     for _, d in ipairs(self.dungeons) do
         local mapID = d.challengeMapID
-        local intime, overtime = ReadBest(mapID)
-        local ti, to = RunEntry(intime), RunEntry(overtime)
+        local ok2, intime, overtime = pcall(C_MythicPlus.GetSeasonBestForMap, mapID)
+        local ti, to = ok2 and RunEntry(intime), ok2 and RunEntry(overtime)
         if not ti and not to then
             summary = summary or ReadSummary() or false
             local run = summary and summary.byMap[mapID]
@@ -166,13 +129,8 @@ function ns:ReadRatings()
         local e = ZeroEntry()
         e.intime, e.overtime = ti, to
         if ti or to then
-            local best = ti
-            if to and (not ti or to.score > ti.score) then best = to end
-            e.hasRun = true
-            e.score = best.score
-            e.level = best.level
-            e.timed = (best == ti)
-            e.durationSec = best.durationSec
+            local best = (to and (not ti or to.score > ti.score)) and to or ti
+            e.hasRun, e.score, e.level, e.timed, e.durationSec = true, best.score, best.level, best == ti, best.durationSec
             e.floor = FloorLevel(best.score)
             if e.timed and (not timedMax or best.level > timedMax) then timedMax = best.level end
         end
@@ -190,11 +148,10 @@ function ns:ReadRatings()
         end
         if any then overall = sum end
     end
-    local ready = self.dungeonsBuilt and overall ~= nil
     parts[#parts + 1] = tostring(overall)
     local signature = table.concat(parts, ";")
     local changed = not self.rating or self.rating.signature ~= signature
-    self.rating = { ready = ready and true or false, overall = overall, byMap = byMap, signature = signature, timedMax = timedMax }
+    self.rating = { ready = (self.dungeonsBuilt and overall ~= nil) and true or false, overall = overall, byMap = byMap, signature = signature, timedMax = timedMax }
     self.ratingDirty = nil
     if changed then
         wipe(planCache)
@@ -204,8 +161,7 @@ function ns:ReadRatings()
 end
 
 function ns:DungeonRating(mapID)
-    local r = self:ReadRatings()
-    return r.byMap[mapID] or ZeroEntry()
+    return self:ReadRatings().byMap[mapID] or ZeroEntry()
 end
 
 function ns:OverallRating()
@@ -219,8 +175,7 @@ end
 
 -- Rating gained by timing `mapID` at `level` (0 when it would not beat the best).
 function ns:RatingGain(mapID, level)
-    local e = self:DungeonRating(mapID)
-    return math.max(0, self:TimedScore(level) - e.score)
+    return math.max(0, self:TimedScore(level) - self:DungeonRating(mapID).score)
 end
 
 -------------------------------------------------------------------------------
@@ -258,8 +213,7 @@ function ns:SetRatingTarget(n)
 end
 
 function ns:StepRatingTarget(delta)
-    local target = self:RatingTarget()
-    self:SetRatingTarget(target + delta * TARGET_STEP)
+    self:SetRatingTarget(self:RatingTarget() + delta * TARGET_STEP)
 end
 
 -- Returns cap, isAuto. Auto = the highest timed key + 2 (10 when nothing is timed).
@@ -284,22 +238,16 @@ function ns:SetRatingMaxKey(n)
 end
 
 function ns:StepRatingMaxKey(delta)
-    local cap = self:RatingMaxKey()
-    self:SetRatingMaxKey(cap + delta)
+    self:SetRatingMaxKey(self:RatingMaxKey() + delta)
 end
 
 function ns:IsDungeonAvoided(mapID)
-    return self.cdb and self.cdb.ioAvoid and self.cdb.ioAvoid[mapID] and true or false
+    return self.cdb and self.cdb.ioAvoid[mapID] and true or false
 end
 
 function ns:ToggleAvoidDungeon(mapID)
     if not mapID then return end
-    self.cdb.ioAvoid = self.cdb.ioAvoid or {}
-    if self.cdb.ioAvoid[mapID] then
-        self.cdb.ioAvoid[mapID] = nil
-    else
-        self.cdb.ioAvoid[mapID] = true
-    end
+    self.cdb.ioAvoid[mapID] = not self.cdb.ioAvoid[mapID] or nil
     self:Fire("RATING_UPDATED")
 end
 
@@ -312,8 +260,7 @@ end
 -- usable drops at the planned key first). Picking one returns the list to
 -- plan order.
 function ns:RatingOrder()
-    local order = self.db and self.db.ioOrder
-    return order == "gear" and "gear" or "rating"
+    return self.db.ioOrder == "gear" and "gear" or "rating"
 end
 
 function ns:SetRatingOrder(order)
@@ -325,7 +272,7 @@ end
 -------------------------------------------------------------------------------
 -- Planner
 -------------------------------------------------------------------------------
--- Raise the dungeons in S (each { d, cur, floor }) one level at a time, the
+-- Raises the dungeons in S (each { d, cur, floor }) one level at a time, the
 -- lowest projected level first, until the gains cover `need`. Returns nil
 -- when the cap stops it short (unless `toCap`, which then returns the plan
 -- with everything at the cap).
@@ -396,9 +343,8 @@ function ns:RatingPlans()
 
     local cands = {}
     for _, d in ipairs(self.dungeons) do
-        local mapID = d.challengeMapID
-        local e = r.byMap[mapID]
-        if e and e.floor and not self:IsDungeonAvoided(mapID) then
+        local e = r.byMap[d.challengeMapID]
+        if e and e.floor and not self:IsDungeonAvoided(d.challengeMapID) then
             cands[#cands + 1] = { d = d, cur = e.score, floor = e.floor }
         end
     end
@@ -444,7 +390,7 @@ end
 function ns:SelectedRatingPlan()
     local plans, info = self:RatingPlans()
     if #plans == 0 then return nil, info end
-    local want = self.db and self.db.ioRuns
+    local want = self.db.ioRuns
     if want then
         for _, p in ipairs(plans) do
             if p.count == want then return p, info end
@@ -465,7 +411,7 @@ end
 -- Requests and events
 -------------------------------------------------------------------------------
 function ns:RequestRatingData()
-    if C_MythicPlus and C_MythicPlus.RequestMapInfo then pcall(C_MythicPlus.RequestMapInfo) end
+    pcall(C_MythicPlus.RequestMapInfo)
 end
 
 local function RefreshRatings()

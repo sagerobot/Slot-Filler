@@ -275,20 +275,25 @@ lua tests/harness.lua
 
 | File | Purpose |
 | --- | --- |
-| `Core.lua` | Namespace, saved variables, events, slash commands |
-| `Data.lua` | Slot definitions, inventory-type mapping, fallback IDs |
+| `Core.lua` | Namespace, saved variables, events, shared helpers, slash commands, `/sf status` |
+| `Data.lua` | Slot definitions, inventory-type mapping, upgrade classes and colours |
 | `Style.lua` | Widget painting: EllesmereUI skin registration with a flat fallback |
 | `Tracks.lua` | Upgrade track ladder + self-calibration from equipped items |
-| `Gear.lua` | Equipped gear scan and tooltip parsing |
-| `Season.lua` | Season pool, reward/vault item levels, activity-to-dungeon mapping |
+| `Gear.lua` | Equipped gear, free upgrade levels, slot/item overrides, owned copies, the wanted list |
+| `Stats.lua` | Stat priority, Pawn scales, weight profiles, equipment set following |
+| `Links.lua` | Item links at a chosen track step (bonus ID discovery) |
+| `Season.lua` | Season numbers and fallback IDs, reward/vault item levels, dungeon pool, activity-to-dungeon mapping |
 | `Rating.lua` | Mythic+ rating per dungeon, timed-score model, run plans towards a target |
-| `Loot.lua` | Adventure Guide loot scanner (dungeons, raid bosses per difficulty) and cache |
+| `Loot.lua` | Adventure Guide loot scanner (dungeons, raid bosses per difficulty, the class set) and cache |
 | `Evaluate.lua` | Upgrade classification (drop, and the Voidcore roll for tooltips), dungeon and boss ranking |
-| `Voidcore.lua` | Bonus roll pools from the Voidcache tooltips, source ranking, the roll window line |
-| `UI.lua` | Main window (Dungeons, Raid, Gear, IO and Voidcore tabs), docking (neighbour-aware) and Group Finder push |
-| `AMR.lua` | Pawn string box under Ask Mr. Robot's window |
-| `Options.lua` | Settings tab and the Settings > AddOns entry |
-| `LFGHook.lua` | Premade Groups badges and tooltip lines |
+| `Voidcore.lua` | Bonus roll pools from the Voidcache tooltips, source ranking, the Catalyst, the roll window line |
+| `Widgets.lua` | Buttons, tabs, the dropdown menu, column headers, list panels and the pooled rows |
+| `Tooltips.lua` | The tooltips of the window's rows |
+| `Tabs.lua` | The Dungeons, Raid, Gear, IO and Voidcore tabs |
+| `Settings.lua` | The Settings page and the Settings > AddOns entry |
+| `Window.lua` | The window shell, toolbar, page switching, docking (neighbour-aware) and Group Finder push |
+| `AMR.lua` | Ask Mr. Robot setups and the Pawn string box under its window |
+| `GroupFinder.lua` | Premade Groups badges and tooltip lines, keystone tooltips |
 
 ## Season data
 

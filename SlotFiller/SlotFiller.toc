@@ -21,7 +21,10 @@ Rating.lua
 Loot.lua
 Evaluate.lua
 Voidcore.lua
-UI.lua
-Options.lua
+Widgets.lua
+Tooltips.lua
+Tabs.lua
+Settings.lua
+Window.lua
 AMR.lua
-LFGHook.lua
+GroupFinder.lua

@@ -7,7 +7,7 @@
 -- it cannot preview a vault-level item. So this module also learns the track
 -- bonus IDs by experiment: starting from a link that carries a track bonus
 -- (a journal link, or one of the player's own equipped items), it swaps that
--- bonus for nearby IDs and asks the client (upgrade info / tooltip) which one
+-- bonus for nearby IDs and asks the client (tooltip / upgrade info) which one
 -- yields the wanted item level and step. Results are cached per season.
 local _, ns = ...
 
@@ -27,43 +27,33 @@ local function SplitLink(link)
     while #fields < 14 do fields[#fields + 1] = "" end
     return prefix, fields, suffix
 end
-ns.SplitLink = SplitLink
 
 local function JoinLink(prefix, fields, suffix)
     return (prefix or "") .. table.concat(fields, ":") .. (suffix or "")
 end
 
-local function GetBonusIDs(fields)
-    local n = tonumber(fields[14]) or 0
+function ns:LinkBonusIDs(link)
+    local _, fields = SplitLink(link)
     local ids = {}
-    for i = 1, n do
+    for i = 1, fields and tonumber(fields[14]) or 0 do
         local v = tonumber(fields[14 + i])
         if v then ids[#ids + 1] = v end
     end
     return ids
 end
 
-function ns:LinkBonusIDs(link)
-    local _, fields = SplitLink(link)
-    if not fields then return {} end
-    return GetBonusIDs(fields)
-end
-
 local function ReplaceBonusID(link, fromID, toID)
     local prefix, fields, suffix = SplitLink(link)
     if not fields then return nil end
-    local n = tonumber(fields[14]) or 0
     local replaced = false
-    for i = 1, n do
+    for i = 1, tonumber(fields[14]) or 0 do
         if tonumber(fields[14 + i]) == fromID then
             fields[14 + i] = tostring(toID)
             replaced = true
         end
     end
-    if not replaced then return nil end
-    return JoinLink(prefix, fields, suffix)
+    return replaced and JoinLink(prefix, fields, suffix) or nil
 end
-ns.ReplaceBonusID = ReplaceBonusID
 
 local function AddBonusID(link, id)
     local prefix, fields, suffix = SplitLink(link)
@@ -76,16 +66,22 @@ local function AddBonusID(link, id)
     fields[14] = tostring(n + 1)
     return JoinLink(prefix, fields, suffix)
 end
-ns.AddBonusID = AddBonusID
 
 -- Journal links may carry an item context that pins the item level; drop it
 -- so an added track bonus can take effect.
 local function ClearContext(link)
     local prefix, fields, suffix = SplitLink(link)
-    if not fields then return nil end
-    if fields[13] == "" then return nil end
+    if not fields or fields[13] == "" then return nil end
     fields[13] = ""
     return JoinLink(prefix, fields, suffix)
+end
+
+-- A link stripped down to the item and one track bonus (no enchants, gems,
+-- context or modifiers): the plain item at that track step.
+local function MinimalLink(link, bonus)
+    local prefix, fields, suffix = SplitLink(link)
+    if not fields then return nil end
+    return (prefix or "") .. string.format("item:%s::::::::%s:%s:::1:%d", fields[2] or "", fields[10] or "", fields[11] or "", bonus) .. (suffix or "")
 end
 
 -------------------------------------------------------------------------------
@@ -96,14 +92,10 @@ end
 function ns:ProbeLink(link)
     if not link then return nil end
     local ilvl = self.ItemLevelOf(link)
+    local ok, data = pcall(C_TooltipInfo.GetHyperlink, link)
     local name, cur, max
-    if C_TooltipInfo and C_TooltipInfo.GetHyperlink then
-        local ok, data = pcall(C_TooltipInfo.GetHyperlink, link)
-        if ok and data then name, cur, max = self.ParseUpgradeFromTooltip(data) end
-    end
-    if not cur then
-        name, cur, max = self.UpgradeInfoOf(link)
-    end
+    if ok and data then name, cur, max = self.ParseUpgradeFromTooltip(data) end
+    if not cur then name, cur, max = self.UpgradeInfoOf(link) end
     return ilvl, name, cur, max
 end
 
@@ -135,7 +127,6 @@ local STORE_VERSION = 2
 
 local function Store()
     if not ns.db then return nil end
-    ns.db.linkBonus = ns.db.linkBonus or {}
     local season = ns:GetSeasonID() or 0
     local s = ns.db.linkBonus[season]
     if not s or s.version ~= STORE_VERSION then
@@ -145,8 +136,8 @@ local function Store()
     return s
 end
 
--- Record that these two links (same item, different levels) differ only by
--- their track bonus: whatever differs is a track bonus ID.
+-- Two links of the same item at different levels differ only by their track
+-- bonus: whatever differs is a track bonus ID.
 function ns:LearnTrackBonusFromPair(linkA, linkB)
     local store = Store()
     if not store or not linkA or not linkB or linkA == linkB then return end
@@ -171,12 +162,9 @@ local function FindTrackBonusByExperiment(self, link)
     for _, b in ipairs(ids) do
         for delta = 1, 3 do
             for _, sign in ipairs({ 1, -1 }) do
-                local test = ReplaceBonusID(link, b, b + sign * delta)
-                local ilvl, name, cur = self:ProbeLink(test)
+                local ilvl, name, cur = self:ProbeLink(ReplaceBonusID(link, b, b + sign * delta))
                 if ilvl then
-                    if cur and baseCur and (cur ~= baseCur or (name and baseName and name ~= baseName)) then
-                        return b, true
-                    end
+                    if cur and baseCur and (cur ~= baseCur or (name and baseName and name ~= baseName)) then return b, true end
                     if not weak and Differs(baseIlvl, baseCur, baseName, ilvl, cur, name) then weak = b end
                 end
             end
@@ -186,10 +174,9 @@ local function FindTrackBonusByExperiment(self, link)
 end
 
 -- Which bonus ID in this link is a known upgrade track bonus?
-function ns:KnownTrackBonusIn(link)
+local function KnownTrackBonusIn(self, link)
     local store = Store()
-    if not store then return nil end
-    for _, b in ipairs(self:LinkBonusIDs(link)) do
+    for _, b in ipairs(store and self:LinkBonusIDs(link) or {}) do
         if store.known[b] then return b end
     end
     return nil
@@ -206,7 +193,7 @@ function ns:LearnTrackBonusesFromGear()
         if g and g.link and g.cur and g.max then
             local b, strong = FindTrackBonusByExperiment(self, g.link)
             if b and strong then
-                table.insert(anchors, { link = g.link, bonus = b, ilvl = g.ilvl, cur = g.cur })
+                anchors[#anchors + 1] = { link = g.link, bonus = b, ilvl = g.ilvl, cur = g.cur }
                 if store then
                     store.known[b] = true
                     local key = tostring(g.ilvl) .. "/" .. tostring(g.cur)
@@ -221,7 +208,7 @@ function ns:LearnTrackBonusesFromGear()
     return anchors
 end
 
--- Search near a known track bonus for the ID that yields the target.
+-- Searches near a known track bonus for the ID that yields the target.
 function ns:FindTrackBonus(link, trackBonus, targetIlvl, targetStep, targetKey)
     for delta = 0, SEARCH_RANGE do
         for _, sign in ipairs({ 1, -1 }) do
@@ -252,9 +239,7 @@ function ns:FindTargetBonus(targetIlvl, targetStep, link, targetKey)
     end
     if not found and link then
         local b, strong = FindTrackBonusByExperiment(self, link)
-        if b and strong then
-            found = self:FindTrackBonus(link, b, targetIlvl, targetStep, targetKey)
-        end
+        if b and strong then found = self:FindTrackBonus(link, b, targetIlvl, targetStep, targetKey) end
     end
     if found and store then
         store.targets[key] = found
@@ -265,20 +250,12 @@ function ns:FindTargetBonus(targetIlvl, targetStep, link, targetKey)
     return found
 end
 
--- A link stripped down to the item and one track bonus (no enchants, gems,
--- context or modifiers): the plain item at that track step.
-local function MinimalLink(link, bonus)
-    local prefix, fields, suffix = SplitLink(link)
-    if not fields then return nil end
-    local body = string.format("item:%s::::::::%s:%s:::1:%d", fields[2] or "", fields[10] or "", fields[11] or "", bonus)
-    return (prefix or "") .. body .. (suffix or "")
-end
-ns.MinimalLink = MinimalLink
-
+-------------------------------------------------------------------------------
 -- The given link rewritten to the wanted item level / step / track, or nil.
--- Resolved links for the session, "link|ilvl|step|track" -> link | false.
 -- Resolving renders tooltips (several per link when it fails), and an
--- evaluation asks for every drop twice; with the cache it asks once.
+-- evaluation asks for every drop twice; resolved links are remembered for
+-- the session as "link|ilvl|step|track" -> link | false.
+-------------------------------------------------------------------------------
 local linkCache = {}
 
 function ns:ClearLinkCache()
@@ -288,21 +265,17 @@ end
 local function ResolveLinkAtLevel(self, link, targetIlvl, targetStep, targetKey)
     local ilvl, name, cur = self:ProbeLink(link)
     if Matches(ilvl, cur, name, targetIlvl, targetStep, targetKey) then return link end
-
     local target = self:FindTargetBonus(targetIlvl, targetStep, link, targetKey)
     if not target then return nil end
-
     -- graft the bonus onto this item and keep the first variant the client
     -- renders exactly right. Context-free variants first: the journal context
     -- keeps its own upgrade line and would mislabel the track.
-    local existing = self:KnownTrackBonusIn(link)
+    local existing = KnownTrackBonusIn(self, link)
     local grafted = existing and ReplaceBonusID(link, existing, target) or AddBonusID(link, target)
     local variants = {}
-    local cleared = grafted and ClearContext(grafted)
-    if cleared then table.insert(variants, cleared) end
-    local minimal = MinimalLink(link, target)
-    if minimal then table.insert(variants, minimal) end
-    if grafted then table.insert(variants, grafted) end
+    for _, v in ipairs({ grafted and ClearContext(grafted) or false, MinimalLink(link, target) or false, grafted or false }) do
+        if v then variants[#variants + 1] = v end
+    end
     for _, v in ipairs(variants) do
         ilvl, name, cur = self:ProbeLink(v)
         if Matches(ilvl, cur, name, targetIlvl, targetStep, targetKey) then return v end
@@ -326,21 +299,18 @@ end
 ns:On("TRACKS_CHANGED", function() ns:ClearLinkCache() end)
 
 -------------------------------------------------------------------------------
--- Link for a loot item under the current drop context
--- Returns link, kind ("exact" | "base")
+-- Link for a loot item under a drop context. Returns link, kind ("exact" | "base").
 -------------------------------------------------------------------------------
 function ns:LinkForContext(item, ctx)
     if not item or not item.link then return nil, "none" end
     -- a tier token has no item level to rewrite; the token itself is shown
     if item.token then return item.link, "base" end
+    -- the best journal preview link at or below the key
     local base = item.link
-    -- best journal preview link at or below the key
     if item.links then
         local bestLevel
         for level in pairs(item.links) do
-            if (ctx.isVoidcore or level <= (ctx.key or 0)) and (not bestLevel or level > bestLevel) then
-                bestLevel = level
-            end
+            if (ctx.isVoidcore or level <= (ctx.key or 0)) and (not bestLevel or level > bestLevel) then bestLevel = level end
         end
         if bestLevel then base = item.links[bestLevel] end
     end
@@ -363,8 +333,8 @@ function ns:PrintLinkDiagnostics()
     local store = Store()
     if store then
         local known, targets = {}, {}
-        for b in pairs(store.known) do table.insert(known, tostring(b)) end
-        for k, v in pairs(store.targets) do table.insert(targets, k .. "=" .. tostring(v)) end
+        for b in pairs(store.known) do known[#known + 1] = tostring(b) end
+        for k, v in pairs(store.targets) do targets[#targets + 1] = k .. "=" .. tostring(v) end
         print("  Known track bonus ids: " .. (#known > 0 and table.concat(known, ", ") or "none"))
         print("  Discovered targets: " .. (#targets > 0 and table.concat(targets, ", ") or "none"))
     end
@@ -386,7 +356,7 @@ function ns:PrintLinkDiagnostics()
     end
     local shown = 0
     for _, d in ipairs(self.dungeons) do
-        local entry = self.loot and self.loot.dungeons and self.loot.dungeons[d.challengeMapID]
+        local entry = self.loot and self.loot.dungeons[d.challengeMapID]
         local items = entry and entry.items
         if items and items[1] and shown < 2 then
             shown = shown + 1
@@ -398,7 +368,7 @@ function ns:PrintLinkDiagnostics()
                 table.concat(self:LinkBonusIDs(it.link), ",")))
             if it.links then
                 local levels = {}
-                for l in pairs(it.links) do table.insert(levels, l) end
+                for l in pairs(it.links) do levels[#levels + 1] = l end
                 table.sort(levels)
                 for _, l in ipairs(levels) do
                     local li, ln, lc = self:ProbeLink(it.links[l])
@@ -414,7 +384,7 @@ function ns:PrintLinkDiagnostics()
     -- judged at and where it came from, with every link's own level
     local diffKey = self:GetRaidDifficulty()
     local waiting = 0
-    for id, v in pairs(self.itemRequests or {}) do if v == true then waiting = waiting + 1 end end
+    for _, v in pairs(self.itemRequests) do if v == true then waiting = waiting + 1 end end
     for _, raid in ipairs(self:GetRaids()) do
         print(string.format("  %s (%s%s)", raid.name, self:RaidDifficultyName(raid, diffKey), waiting > 0 and string.format(", %d items still loading", waiting) or ""))
         local shownLink = false

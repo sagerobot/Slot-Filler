@@ -1,6 +1,6 @@
--- Slot Filler: the Settings tab + the entry in the game's Settings > AddOns list.
+-- Slot Filler: the Settings page, and the entry in the game's Settings > AddOns list.
 local _, ns = ...
-local Style = ns.Style
+local Style, UI = ns.Style, ns.UI
 
 local panel
 local ROW_H = 24
@@ -45,13 +45,11 @@ function ns:BuildSettingsPage(page)
     end
     local function AddCheck(label, tooltip, key, indent)
         local row = Row()
-        local cb = ns.UI.Check(row, 22)
+        local cb = UI.Check(row, 22)
         cb:SetPoint("LEFT", 4 + (indent or 0), 0)
-        cb.Label = Style.Text(row, 11, 1, 1, 1, 0.85)
+        cb.Label = UI.Line(row, 11, "LEFT", 1, 1, 1, 0.85)
         cb.Label:SetPoint("LEFT", cb, "RIGHT", 2, 0)
         cb.Label:SetPoint("RIGHT", row, "RIGHT", -6, 0)
-        cb.Label:SetJustifyH("LEFT")
-        cb.Label:SetWordWrap(false)
         cb.Label:SetText(label)
         cb.get = function() return ns.db[key] end
         cb.set = function(v) ns.db[key] = v end
@@ -59,7 +57,7 @@ function ns:BuildSettingsPage(page)
             self.set(self:GetChecked() and true or false)
             ns:Fire("SETTINGS_CHANGED")
         end)
-        if tooltip then ns.UI.Tip(cb, "ANCHOR_RIGHT", label, tooltip) end
+        if tooltip then UI.Tip(cb, "ANCHOR_RIGHT", label, tooltip) end
         table.insert(panel.controls, cb)
         return cb
     end
@@ -74,6 +72,42 @@ function ns:BuildSettingsPage(page)
         y = y - (height or 26) - 4
         return fs
     end
+    -- A labelled text box with a button on its right; Enter and the button
+    -- both call onSubmit. Returns the row, box and button.
+    local function EditRow(label, buttonText, onSubmit)
+        local row = Row(28)
+        local lbl = RowLabel(row, label)
+        local button = UI.TextButton(row, buttonText, 56, 20)
+        button:SetPoint("RIGHT", -6, 0)
+        local box = UI.EditBox(row)
+        box:SetPoint("LEFT", lbl, "RIGHT", 12, 0)
+        box:SetPoint("RIGHT", button, "LEFT", -6, 0)
+        button:SetScript("OnClick", onSubmit)
+        box:SetScript("OnEnterPressed", onSubmit)
+        return row, box, button
+    end
+    -- Left-to-right small tabs on the right of a row; onSelect(id).
+    local function Switch(row, defs, w, onSelect)
+        local tabs = UI.TabStrip(row, defs, w, onSelect)
+        tabs:SetPoint("RIGHT", -6, 0)
+        return tabs
+    end
+    local function Stepper(row, onStep)
+        local plus = UI.TextButton(row, "+", 22, 20, 13)
+        plus:SetPoint("RIGHT", -6, 0)
+        local box = CreateFrame("Frame", nil, row)
+        box:SetSize(50, 20)
+        box:SetPoint("RIGHT", plus, "LEFT", -1, 0)
+        Style.Panel(box, { inset = true })
+        local text = Style.Text(box, 11)
+        text:SetPoint("CENTER", 0, 0)
+        local minus = UI.TextButton(row, "-", 22, 20, 13)
+        minus:SetPoint("RIGHT", box, "LEFT", -1, 0)
+        plus:SetScript("OnClick", function() onStep(1) end)
+        minus:SetScript("OnClick", function() onStep(-1) end)
+        return text
+    end
+    local specName = function() return (ns:SpecName(ns:GetEvalSpecID())) or "this spec" end
 
     Header("Dungeons")
     AddCheck("Count immediate item level upgrades",
@@ -84,64 +118,53 @@ function ns:BuildSettingsPage(page)
         "matchLevel")
     match.set = function(v) ns:SetMatchLevel(v) end
     AddCheck("Hide dungeons and bosses with nothing for you", "Hide dungeons and raid bosses with no upgrade drops and no wanted items.", "hideEmptyDungeons")
-    AddCheck("Only list upgrades and wanted items under a dungeon",
-        "Hide the other drops when a dungeon is expanded.",
-        "hideNonUpgrades")
+    AddCheck("Only list upgrades and wanted items under a dungeon", "Hide the other drops when a dungeon is expanded.", "hideNonUpgrades")
     AddCheck("Show tier tokens as the token, the set piece beneath",
         "A raid boss's tier token is judged as the set piece it makes for your class. On: the row shows the token; click it for the piece. Off: the piece takes the token's place. The last boss's any-slot token always lists its five pieces.",
         "nestTokens")
 
     Header("Wanted list")
-    local wantedRow = Row(28)
-    local wantedLabel = RowLabel(wantedRow, "Share")
-    local wantedImport = ns.UI.TextButton(wantedRow, "Import", 56, 20)
-    wantedImport:SetPoint("RIGHT", -6, 0)
-    local wantedExport = ns.UI.TextButton(wantedRow, "Export", 56, 20)
-    wantedExport:SetPoint("RIGHT", wantedImport, "LEFT", -4, 0)
-    local wantedBox = CreateFrame("EditBox", nil, wantedRow, "InputBoxTemplate")
-    wantedBox:SetAutoFocus(false)
-    wantedBox:SetHeight(20)
-    wantedBox:SetPoint("LEFT", wantedLabel, "RIGHT", 12, 0)
-    wantedBox:SetPoint("RIGHT", wantedExport, "LEFT", -6, 0)
-    Style.EditBox(wantedBox)
-    wantedExport:SetScript("OnClick", function()
-        wantedBox:SetText(ns:ExportWanted())
-        wantedBox:SetFocus()
-        wantedBox:HighlightText()
-    end)
+    local wantedBox, wantedImport
     local function ImportWanted()
         local n, info = ns:ImportWanted(wantedBox:GetText() or "")
         if n then
             wantedBox:SetText("")
             wantedBox:ClearFocus()
-            ns:Print(string.format("Added %d item(s) to the wanted list for %s.", n, (ns:SpecName(ns:GetEvalSpecID())) or "this spec"))
+            ns:Print(string.format("Added %d item(s) to the wanted list for %s.", n, specName()))
         else
             ns:Print("Could not read that list:", info)
         end
-        ns:RefreshOptionsPanel()
+        ns:RefreshSettings()
     end
-    wantedImport:SetScript("OnClick", ImportWanted)
-    wantedBox:SetScript("OnEnterPressed", ImportWanted)
-    wantedBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    ns.UI.Tip(wantedExport, "ANCHOR_RIGHT", "Export", "Puts your wanted list and Voidcore targets for this spec in the box as text you can copy and send to a friend.")
-    ns.UI.Tip(wantedImport, "ANCHOR_RIGHT", "Import", "Paste a list a friend exported and press Enter. Items are added to your lists for this spec.")
+    local wantedRow
+    wantedRow, wantedBox, wantedImport = EditRow("Share", "Import", ImportWanted)
+    local wantedExport = UI.TextButton(wantedRow, "Export", 56, 20)
+    wantedExport:SetPoint("RIGHT", wantedImport, "LEFT", -4, 0)
+    wantedBox:SetPoint("RIGHT", wantedExport, "LEFT", -6, 0)
+    wantedExport:SetScript("OnClick", function()
+        wantedBox:SetText(ns:ExportWanted())
+        wantedBox:SetFocus()
+        wantedBox:HighlightText()
+    end)
+    UI.Tip(wantedExport, "ANCHOR_RIGHT", "Export", "Puts your wanted list and Voidcore targets for this spec in the box as text you can copy and send to a friend.")
+    UI.Tip(wantedImport, "ANCHOR_RIGHT", "Import", "Paste a list a friend exported and press Enter. Items are added to your lists for this spec.")
     local clearRow = Row(28)
     panel.wantedCount = RowLabel(clearRow, "")
-    local wantedClear = ns.UI.TextButton(clearRow, "Clear wanted list", 120, 20)
+    local wantedClear = UI.TextButton(clearRow, "Clear wanted list", 120, 20)
     wantedClear:SetPoint("RIGHT", -6, 0)
     wantedClear:SetScript("OnClick", function()
         for _, id in ipairs(ns:WantedItemIDs()) do ns:SetItemState(id, nil) end
         for _, id in ipairs(ns:VoidcoreItemIDs()) do ns:SetVoidcoreTarget(id, false) end
-        ns:RefreshOptionsPanel()
+        ns:RefreshSettings()
     end)
     Hint("Star a drop to want it; the purple star marks what you would spend a Voidcore on. Both leave the list by themselves once the item turns up.", 30)
 
     Header("Stat weights")
     local profRow = Row(28)
     local profLabel = RowLabel(profRow, "Profile")
-    local profDelete = ns.UI.TextButton(profRow, "Delete", 56, 20)
+    local profDelete = UI.TextButton(profRow, "Delete", 56, 20)
     profDelete:SetPoint("RIGHT", -6, 0)
-    local profDrop = ns.UI.StatProfileDropdown(profRow, nil, 20)
+    local profDrop = UI.StatProfileDropdown(profRow, nil, 20)
     profDrop:SetPoint("LEFT", profLabel, "RIGHT", 12, 0)
     profDrop:SetPoint("RIGHT", profDelete, "LEFT", -6, 0)
     panel.profileDrop, panel.profileDelete = profDrop, profDelete
@@ -149,69 +172,45 @@ function ns:BuildSettingsPage(page)
         local i, scale = ns:GetActiveStatProfile()
         if i then
             ns:DeleteStatProfile(i)
-            ns:Print(string.format("Deleted weight profile \"%s\" for %s.", tostring(scale.name), (ns:SpecName(ns:GetEvalSpecID())) or "this spec"))
+            ns:Print(string.format("Deleted weight profile \"%s\" for %s.", tostring(scale.name), specName()))
         end
-        ns:RefreshOptionsPanel()
+        ns:RefreshSettings()
     end)
-    ns.UI.Tip(profDelete, "ANCHOR_RIGHT", "Delete profile",
-        "Forget the selected profile. Stats are ranked from your gear until you pick another one.")
+    UI.Tip(profDelete, "ANCHOR_RIGHT", "Delete profile", "Forget the selected profile. Stats are ranked from your gear until you pick another one.")
 
-    local pawnRow = Row(28)
-    local pawnLabel = RowLabel(pawnRow, "Pawn string")
-    local pawnImport = ns.UI.TextButton(pawnRow, "Import", 56, 20)
-    pawnImport:SetPoint("RIGHT", -6, 0)
-    local pawnBox = CreateFrame("EditBox", nil, pawnRow, "InputBoxTemplate")
-    pawnBox:SetAutoFocus(false)
-    pawnBox:SetHeight(20)
-    pawnBox:SetPoint("LEFT", pawnLabel, "RIGHT", 12, 0)
-    pawnBox:SetPoint("RIGHT", pawnImport, "LEFT", -6, 0)
-    Style.EditBox(pawnBox)
-    panel.pawnBox = pawnBox
+    local pawnBox
     local function ImportPawn()
         local scale, err = ns:ImportPawnString(pawnBox:GetText() or "")
-        local specName = ns:SpecName(ns:GetEvalSpecID())
         if scale then
             pawnBox:SetText("")
             pawnBox:ClearFocus()
-            ns:Print(string.format("Saved Pawn scale \"%s\" as weight profile \"%s\" for %s and switched to it.", scale.pawnName or "?", scale.name, specName or "this spec"))
-            if scale.spec and specName and scale.spec:lower() ~= tostring(specName):lower() then
-                ns:Print(string.format("Note: the scale says %s %s; it is applied to %s.", scale.class or "", scale.spec, specName))
+            ns:Print(string.format("Saved Pawn scale \"%s\" as weight profile \"%s\" for %s and switched to it.", scale.pawnName or "?", scale.name, specName()))
+            local name = ns:SpecName(ns:GetEvalSpecID())
+            if scale.spec and name and scale.spec:lower() ~= tostring(name):lower() then
+                ns:Print(string.format("Note: the scale says %s %s; it is applied to %s.", scale.class or "", scale.spec, name))
             end
         else
             ns:Print("Could not read that Pawn string:", err)
         end
-        ns:RefreshOptionsPanel()
+        ns:RefreshSettings()
     end
-    pawnImport:SetScript("OnClick", ImportPawn)
-    pawnBox:SetScript("OnEnterPressed", ImportPawn)
-    pawnBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    ns.UI.Tip(pawnBox, "ANCHOR_RIGHT", "Pawn string",
+    _, pawnBox = EditRow("Pawn string", "Import", ImportPawn)
+    UI.Tip(pawnBox, "ANCHOR_RIGHT", "Pawn string",
         "Paste a Pawn scale string for this spec (from Pawn, Raidbots or a guide) and press Enter. It is saved as a new profile named after the scale and used right away: its weights order the stats, and tooltips compare a drop's weighted value with your equipped item.")
 
-    local nameRow = Row(28)
-    local nameLabel = RowLabel(nameRow, "Name")
-    local nameRename = ns.UI.TextButton(nameRow, "Rename", 56, 20)
-    nameRename:SetPoint("RIGHT", -6, 0)
-    local nameBox = CreateFrame("EditBox", nil, nameRow, "InputBoxTemplate")
-    nameBox:SetAutoFocus(false)
-    nameBox:SetHeight(20)
-    nameBox:SetPoint("LEFT", nameLabel, "RIGHT", 12, 0)
-    nameBox:SetPoint("RIGHT", nameRename, "LEFT", -6, 0)
-    Style.EditBox(nameBox)
-    panel.nameBox, panel.nameRename = nameBox, nameRename
+    local nameBox
     local function RenameProfile()
         local i, scale = ns:GetActiveStatProfile()
         nameBox:ClearFocus()
         if i and ns:RenameStatProfile(i, nameBox:GetText() or "") then
             ns:Print(string.format("Renamed weight profile to \"%s\".", scale.name))
         end
-        ns:RefreshOptionsPanel()
+        ns:RefreshSettings()
     end
-    nameRename:SetScript("OnClick", RenameProfile)
-    nameBox:SetScript("OnEnterPressed", RenameProfile)
-    nameBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); ns:RefreshOptionsPanel() end)
-    ns.UI.Tip(nameBox, "ANCHOR_RIGHT", "Profile name",
-        "Rename the selected profile: type a name and press Enter. Short names such as Raid or M+ read best in the window.")
+    _, nameBox, panel.nameRename = EditRow("Name", "Rename", RenameProfile)
+    panel.nameBox = nameBox
+    nameBox:SetScript("OnEscapePressed", function(self) self:ClearFocus(); ns:RefreshSettings() end)
+    UI.Tip(nameBox, "ANCHOR_RIGHT", "Profile name", "Rename the selected profile: type a name and press Enter. Short names such as Raid or M+ read best in the window.")
     Hint("Keep one profile per situation, say Raid and Mythic+, and switch with the Weights button in the window or here. Profiles belong to this character and spec.", 30)
 
     -- Stat priority: a Manual / Auto switch, the four stats best first, and
@@ -220,37 +219,17 @@ function ns:BuildSettingsPage(page)
     Header("Stat priority")
     local modeRow = Row(26)
     RowLabel(modeRow, "Order")
-    local modeTabs = CreateFrame("Frame", nil, modeRow)
-    modeTabs:SetSize(2 * 60 + 1, 20)
-    modeTabs:SetPoint("RIGHT", -6, 0)
-    panel.StatModeTabs = modeTabs
-    local prevMode
-    for _, def in ipairs({
+    panel.StatModeTabs = Switch(modeRow, {
         { "manual", "Manual", "Your own order for this spec: click the stats to arrange them." },
         { "auto", "Auto", "Follows the weight profile in use, or your equipped gear without one." },
-    }) do
-        local tab = CreateFrame("Button", nil, modeTabs)
-        tab:SetSize(60, 20)
-        if prevMode then tab:SetPoint("LEFT", prevMode, "RIGHT", 1, 0) else tab:SetPoint("LEFT", 0, 0) end
-        tab.Text = Style.Text(tab, 11)
-        tab.Text:SetPoint("CENTER", 0, 0)
-        tab.Text:SetText(def[2])
-        tab.tabID = def[1]
-        tab:SetScript("OnClick", function()
-            ns:SetStatMode(def[1])
-            ns:RefreshOptionsPanel()
-        end)
-        Style.Tab(tab)
-        ns.UI.Tip(tab, "ANCHOR_RIGHT", def[2], def[3])
-        prevMode = tab
-    end
+    }, 60, function(mode) ns:SetStatMode(mode); ns:RefreshSettings() end)
 
     local prioRow = Row(26)
     RowLabel(prioRow, "Best first")
     panel.statButtons = {}
     local prevBtn
     for i = 1, #ns.STATS do
-        local b = ns.UI.TextButton(prioRow, "", 40, 20, 10)
+        local b = UI.TextButton(prioRow, "", 40, 20, 10)
         if prevBtn then b:SetPoint("RIGHT", prevBtn, "LEFT", -1, 0) else b:SetPoint("RIGHT", -6, 0) end
         b.index = #ns.STATS - i + 1 -- laid out right to left
         b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -262,7 +241,7 @@ function ns:BuildSettingsPage(page)
             if j < 1 or j > #list then return end
             list[self.index], list[j] = list[j], list[self.index]
             ns:SetStatPriority(list)
-            ns:RefreshOptionsPanel()
+            ns:RefreshSettings()
         end)
         b:HookScript("OnEnter", function(self)
             if not self.statName then return end
@@ -275,39 +254,19 @@ function ns:BuildSettingsPage(page)
         prevBtn = b
     end
     local hintRow = Row(22)
-    panel.statHint = Style.Text(hintRow, 10, 1, 1, 1, 0.53)
+    panel.statHint = UI.Line(hintRow, 10, "LEFT", 1, 1, 1, 0.53)
     panel.statHint:SetPoint("LEFT", 8, 0)
     panel.statHint:SetPoint("RIGHT", -6, 0)
-    panel.statHint:SetJustifyH("LEFT")
-    panel.statHint:SetWordWrap(false)
 
     Header("Window")
     local sideRow = Row(26)
     RowLabel(sideRow, "Dock side")
-    local dockTabs = CreateFrame("Frame", nil, sideRow)
-    dockTabs:SetSize(3 * 60 + 2, 20)
-    dockTabs:SetPoint("RIGHT", -6, 0)
-    panel.DockTabs = dockTabs
-    local prev
-    for _, def in ipairs({ { "left", "Left" }, { "right", "Right" }, { "free", "Free" } }) do
-        local tab = CreateFrame("Button", nil, dockTabs)
-        tab:SetSize(60, 20)
-        if prev then tab:SetPoint("LEFT", prev, "RIGHT", 1, 0) else tab:SetPoint("LEFT", 0, 0) end
-        tab.Text = Style.Text(tab, 11)
-        tab.Text:SetPoint("CENTER", 0, 0)
-        tab.Text:SetText(def[2])
-        tab.tabID = def[1]
-        tab:SetScript("OnClick", function()
-            ns.db.anchorSide = def[1]
-            Style.SelectTab(dockTabs, def[1])
-            ns:AnchorWindow()
-            ns:Fire("SETTINGS_CHANGED")
-        end)
-        Style.Tab(tab)
-        ns.UI.Tip(tab, "ANCHOR_RIGHT", "Dock side",
-            "Left or right of the Dungeons & Raids window, or free: drag the title bar to place it.")
-        prev = tab
-    end
+    local sideTip = "Left or right of the Dungeons & Raids window, or free: drag the title bar to place it."
+    panel.DockTabs = Switch(sideRow, { { "left", "Left", sideTip }, { "right", "Right", sideTip }, { "free", "Free", sideTip } }, 60, function(side)
+        ns.db.anchorSide = side
+        ns:AnchorWindow()
+        ns:Fire("SETTINGS_CHANGED")
+    end)
     -- Free mode only: anchor the window to the Group Finder so it moves along
     -- when another addon moves that.
     local follow = AddCheck("Move with Dungeons & Raids",
@@ -321,31 +280,16 @@ function ns:BuildSettingsPage(page)
     panel.followCheck = follow
     AddCheck("Open with the Group Finder", "Show automatically whenever the Dungeons & Raids window opens.", "autoShow")
     AddCheck("Only on the Premade Groups tab", "Only auto-show while the Premade Groups tab is active.", "onlyPremadeTab")
-    local push = AddCheck("Push the Group Finder right when needed",
+    AddCheck("Push the Group Finder right when needed",
         "If there is no room on the left of the screen, move the Group Finder right to make space. It moves back when this window closes.",
         "pushGroupFinder")
-    push.get = function() return ns.db.pushGroupFinder ~= false end
 
     local scaleRow = Row(26)
     RowLabel(scaleRow, "Scale")
-    local plus = ns.UI.TextButton(scaleRow, "+", 22, 20, 13)
-    plus:SetPoint("RIGHT", -6, 0)
-    local box = CreateFrame("Frame", nil, scaleRow)
-    box:SetSize(50, 20)
-    box:SetPoint("RIGHT", plus, "LEFT", -1, 0)
-    Style.Panel(box, { inset = true })
-    local scaleText = Style.Text(box, 11)
-    scaleText:SetPoint("CENTER", 0, 0)
-    local minus = ns.UI.TextButton(scaleRow, "-", 22, 20, 13)
-    minus:SetPoint("RIGHT", box, "LEFT", -1, 0)
-    panel.scaleText = scaleText
-    minus:SetScript("OnClick", function()
-        ns.db.scale = math.max(0.6, (ns.db.scale or 1) - 0.05)
-        ns:AnchorWindow(); ns:RefreshOptionsPanel()
-    end)
-    plus:SetScript("OnClick", function()
-        ns.db.scale = math.min(1.5, (ns.db.scale or 1) + 0.05)
-        ns:AnchorWindow(); ns:RefreshOptionsPanel()
+    panel.scaleText = Stepper(scaleRow, function(d)
+        ns.db.scale = math.max(0.6, math.min(1.5, ns.db.scale + d * 0.05))
+        ns:AnchorWindow()
+        ns:RefreshSettings()
     end)
 
     Header("Group Finder & keystones")
@@ -371,19 +315,19 @@ function ns:BuildSettingsPage(page)
 
     local shiftRow = Row(26)
     RowLabel(shiftRow, "Shift all tracks")
-    local sReset = ns.UI.TextButton(shiftRow, "Reset", 52, 20)
+    local sReset = UI.TextButton(shiftRow, "Reset", 52, 20)
     sReset:SetPoint("RIGHT", -6, 0)
-    local sPlus = ns.UI.TextButton(shiftRow, "+1", 30, 20)
+    local sPlus = UI.TextButton(shiftRow, "+1", 30, 20)
     sPlus:SetPoint("RIGHT", sReset, "LEFT", -6, 0)
-    local sMinus = ns.UI.TextButton(shiftRow, "-1", 30, 20)
+    local sMinus = UI.TextButton(shiftRow, "-1", 30, 20)
     sMinus:SetPoint("RIGHT", sPlus, "LEFT", -1, 0)
     local function Shift(delta)
         local defs = ns:GetTrackDefs()
-        for _, d in ipairs(defs) do d.min = d.min + delta; d.max = d.max + delta end
+        for _, d in ipairs(defs) do d.min = d.min + delta end
         ns.db.trackOverride = defs
         ns:SetTrackTable(defs)
         ns:ScanGear()
-        ns:RefreshOptionsPanel()
+        ns:RefreshSettings()
     end
     sMinus:SetScript("OnClick", function() Shift(-1) end)
     sPlus:SetScript("OnClick", function() Shift(1) end)
@@ -392,23 +336,23 @@ function ns:BuildSettingsPage(page)
         ns.trackOffsetApplied = nil
         ns:ApplyTrackDefaults()
         ns:ScanGear()
-        ns:RefreshOptionsPanel()
+        ns:RefreshSettings()
     end)
     y = y - 4
     Hint("Tracks are calibrated automatically from the upgrade line on your equipped items. Use the shift buttons only if the numbers look wrong for the current season.", 40)
 
     Header("Reset")
     local btnRow = Row(28)
-    local resetOverrides = ns.UI.TextButton(btnRow, "Clear slot & item overrides", 160, 20)
+    local resetOverrides = UI.TextButton(btnRow, "Clear slot & item overrides", 160, 20)
     resetOverrides:SetPoint("LEFT", 6, 0)
     resetOverrides:SetScript("OnClick", function()
         wipe(ns.cdb.slotState)
         ns:ClearItemStates()
     end)
-    ns.UI.Tip(resetOverrides, "ANCHOR_RIGHT", "Clear overrides", "Resets every slot to Auto and clears the wanted list and exclusions for this spec.")
-    local clearCache = ns.UI.TextButton(btnRow, "Rescan loot", 90, 20)
-    clearCache:SetPoint("LEFT", resetOverrides, "RIGHT", 6, 0)
-    clearCache:SetScript("OnClick", function() ns:RescanLoot(true) end)
+    UI.Tip(resetOverrides, "ANCHOR_RIGHT", "Clear overrides", "Resets every slot to Auto and clears the wanted list and exclusions for this spec.")
+    local rescan = UI.TextButton(btnRow, "Rescan loot", 90, 20)
+    rescan:SetPoint("LEFT", resetOverrides, "RIGHT", 6, 0)
+    rescan:SetScript("OnClick", function() ns:RescanLoot(true) end)
     y = y - 6
 
     local ver = Style.Text(c, 10, 1, 1, 1, 0.41)
@@ -417,19 +361,19 @@ function ns:BuildSettingsPage(page)
     y = y - 16
 
     c:SetHeight(-y + 10)
-    panel:SetScript("OnShow", function() ns:RefreshOptionsPanel() end)
+    panel:SetScript("OnShow", function() ns:RefreshSettings() end)
     return panel
 end
 
-function ns:RefreshOptionsPanel()
+function ns:RefreshSettings()
     if not panel or not panel:IsShown() then return end
     for _, cb in ipairs(panel.controls) do cb:SetChecked(cb.get() and true or false) end
-    local side = ns.db.anchorSide or "left"
+    local side = self.db.anchorSide
     if panel.DockTabs.selectedTabID ~= side then Style.SelectTab(panel.DockTabs, side) end
     panel.followCheck:SetEnabled(side == "free")
     panel.followCheck:SetAlpha(side == "free" and 1 or 0.4)
     panel.followCheck.Label:SetAlpha(side == "free" and 1 or 0.4)
-    panel.scaleText:SetText(string.format("%d%%", (ns.db.scale or 1) * 100 + 0.5))
+    panel.scaleText:SetText(string.format("%d%%", self.db.scale * 100 + 0.5))
     local n, v = #self:WantedItemIDs(), #self:VoidcoreItemIDs()
     panel.wantedCount:SetText((n + v) == 0 and "|cff888888Nothing wanted yet for this spec|r"
         or string.format("%d wanted, %s%d Voidcore|r for %s", n, ns.VC_HEX, v, (self:SpecName(self:GetEvalSpecID())) or "this spec"))
@@ -437,13 +381,12 @@ function ns:RefreshOptionsPanel()
     local mode = self:GetStatMode()
     if panel.StatModeTabs.selectedTabID ~= mode then Style.SelectTab(panel.StatModeTabs, mode) end
     for i, b in ipairs(panel.statButtons) do
-        local key = (order or self.STAT_DEFAULT_ORDER)[i]
-        local s = self.STAT_BY_KEY[key]
-        b.Text:SetText(s and s.short or tostring(key))
-        b.statName = s and s.name or nil
+        local s = self.STAT_BY_KEY[(order or self.STAT_DEFAULT_ORDER)[i]]
+        b.Text:SetText(s.short)
+        b.statName = s.name
         b.Text:SetAlpha(mode == "manual" and 1 or 0.6)
     end
-    ns.UI.RefreshStatProfileButton(panel.profileDrop)
+    UI.RefreshStatProfileButton(panel.profileDrop)
     local pIndex, scale = self:GetActiveStatProfile()
     panel.profileDelete:SetEnabled(pIndex ~= nil)
     panel.nameRename:SetEnabled(pIndex ~= nil)
@@ -460,11 +403,10 @@ function ns:RefreshOptionsPanel()
     local lines = {}
     for i = #self.tracks, 1, -1 do
         local t = self.tracks[i]
-        table.insert(lines, string.format("%s%s|r: %d - %d (%d steps)",
-            t.localizedName and "|cffffffff" or "|cffaaaaaa", self:TrackDisplayName(t), t.min, t.max, t.steps))
+        lines[#lines + 1] = string.format("%s%s|r: %d - %d (%d steps)", t.localizedName and "|cffffffff" or "|cffaaaaaa", self:TrackDisplayName(t), t.min, t.max, t.steps)
     end
-    if #lines == 0 then table.insert(lines, "|cffff5555No track data|r") end
-    if self.db.trackOverride then table.insert(lines, "|cffff9900(manual override active)|r") end
+    if #lines == 0 then lines[1] = "|cffff5555No track data|r" end
+    if self.db.trackOverride then lines[#lines + 1] = "|cffff9900(manual override active)|r" end
     panel.trackText:SetText(table.concat(lines, "\n"))
 end
 
@@ -472,7 +414,7 @@ end
 -- Entry in the game's Settings > AddOns list
 -------------------------------------------------------------------------------
 ns:On("DB_READY", function()
-    if not (Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory) then return end
+    if not Settings then return end
     local f = CreateFrame("Frame")
     f.name = "Slot Filler"
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -492,8 +434,5 @@ ns:On("DB_READY", function()
         ns:OpenOptions()
     end)
     local ok, category = pcall(Settings.RegisterCanvasLayoutCategory, f, f.name)
-    if ok and category then
-        pcall(Settings.RegisterAddOnCategory, category)
-        ns.settingsCategory = category
-    end
+    if ok and category then pcall(Settings.RegisterAddOnCategory, category) end
 end)

@@ -105,8 +105,17 @@ for _, g in ipairs({ "HEADSLOT", "NECKSLOT", "SHOULDERSLOT", "BACKSLOT", "CHESTS
 end
 _G.ITEM_UPGRADE_TOOLTIP_FORMAT_STRING = "Upgrade Level: %s %d/%d"
 _G.ITEM_UPGRADE_TOOLTIP_FORMAT = "Upgrade Level: %d/%d"
-_G.Enum = { ItemClass = { Weapon = 2, Armor = 4 }, ItemSlotFilterType = { NoFilter = 15 } }
-_G.DifficultyUtil = { ID = { DungeonChallenge = 8, DungeonMythic = 23 } }
+_G.Enum = {
+    ItemClass = { Weapon = 2, Armor = 4 }, ItemSlotFilterType = { NoFilter = 15 }, BagIndex = {}, TooltipDataType = { Item = 0 },
+    ItemRedundancySlot = { Head = 0, Neck = 1, Shoulder = 2, Chest = 3, Waist = 4, Legs = 5, Feet = 6, Wrist = 7, Hand = 8, Finger = 9,
+        Trinket = 10, Cloak = 11, Twohand = 12, MainhandWeapon = 13, OnehandWeapon = 14, OnehandWeaponSecond = 15, Offhand = 16 },
+}
+_G.DifficultyUtil = { ID = { DungeonChallenge = 8, DungeonMythic = 23, PrimaryRaidLFR = 17, PrimaryRaidNormal = 14, PrimaryRaidHeroic = 15, PrimaryRaidMythic = 16 } }
+_G.C_Texture = { GetAtlasInfo = function() return nil end }
+_G.ScrollUtil = { InitScrollFrameWithScrollBar = function() end }
+_G.TooltipDataProcessor = { AddTooltipPostCall = function() end }
+_G.TooltipUtil = { GetDisplayedItem = function() return nil end }
+_G.STAT_CRITICAL_STRIKE, _G.STAT_HASTE, _G.STAT_MASTERY, _G.STAT_VERSATILITY = "Critical Strike", "Haste", "Mastery", "Versatility"
 _G.ScrollBoxListMixin = { Event = { OnUpdate = "OnUpdate" } }
 _G.Settings = nil
 _G.SlashCmdList = {}
@@ -130,7 +139,8 @@ end
 _G.C_AddOns = { GetAddOnMetadata = function() return "test" end, LoadAddOn = function() return true end, IsAddOnLoaded = function() return false end }
 _G.UnitClass = function() return "Warrior", "WARRIOR", 1 end
 
--- specialization (12.x: C_SpecializationInfo for spec index/info, globals for the rest)
+-- specialization, as the 12.1 client has it: the active spec under
+-- C_SpecializationInfo, the loot spec and per-ID lookups as globals
 _G.C_SpecializationInfo = {
     GetSpecialization = function() return 1 end,
     GetSpecializationInfo = function(i) return 72, "Fury", "", 132347 end,
@@ -555,7 +565,10 @@ LFGListFrame.SearchPanel.ScrollBox = NewWidget("Frame")
 -- Load the addon
 -------------------------------------------------------------------------------
 local ns = {}
-local files = { "Core.lua", "Data.lua", "Style.lua", "Tracks.lua", "Gear.lua", "Stats.lua", "Links.lua", "Season.lua", "Rating.lua", "Loot.lua", "Evaluate.lua", "Voidcore.lua", "UI.lua", "Options.lua", "AMR.lua", "LFGHook.lua" }
+local files = {}
+for line in io.lines(ADDON_DIR .. "SlotFiller.toc") do
+    if line:match("^[%w_]+%.lua$") then files[#files + 1] = line end
+end
 for _, f in ipairs(files) do
     local chunk, err = loadfile(ADDON_DIR .. f)
     assert(chunk, err)
@@ -574,11 +587,10 @@ Equip(12, 5012, 295, "Upgrade Level: Veteran 6/6")       -- ring B Veteran maxed
 Equip(15, 5015, 308, "Upgrade Level: Champion 6/6")      -- cloak Champion maxed -> Hero 3/6 drop is a track upgrade (+3)
 Equip(5, 5005, 311, "Upgrade Level: Hero 3/6")           -- chest Hero 3/6 -> drop 311 = no upgrade; Voidcore Myth = track upgrade
 
--- Fire lifecycle (with poisoned learned names from an early build in saved variables)
-_G.SlotFillerDB = { learnedTrackNames = { Myth = "Hero", Hero = "Hero" } }
+-- Fire lifecycle
 local ev = ns.eventFrame._scripts.OnEvent
 ev(ns.eventFrame, "ADDON_LOADED", "SlotFiller")
-check(ns:TrackKeyForName("Myth") == "Myth" and ns.db.learnedTrackNames.Myth == nil, "poisoned learned track names are purged; English names win")
+check(ns:TrackKeyForName("Myth") == "Myth", "English track names are their own keys")
 check(ns.db ~= nil and ns.cdb ~= nil, "saved variables initialised")
 check(#ns.tracks == 5, "track table built from season defaults (" .. #ns.tracks .. ")")
 check(ns.trackByKey.Champion.min == 292 and ns.trackByKey.Champion.max == 308, "Champion 292-308")
@@ -806,8 +818,7 @@ check(ns:ExportWanted() == "SF2:72::1008", "export carries Voidcore targets (" .
 ns:SetVoidcoreTarget(1008, false)
 local added = ns:ImportWanted("SF2:72:1005:1008")
 check(added == 2 and ns:GetItemState(1005) == "want" and ns:IsVoidcoreTarget(1008), "import restores both lists")
-check(ns:ImportWanted("SF1:72:1002") == 1 and ns:GetItemState(1002) == "want", "old SF1 lists still import")
-ns:SetItemState(1005, nil); ns:SetItemState(1002, nil); ns:SetVoidcoreTarget(1008, false)
+ns:SetItemState(1005, nil); ns:SetVoidcoreTarget(1008, false)
 RunTimers()
 
 -- countIlvlUpgrades off
@@ -890,13 +901,13 @@ byItem = {}
 for _, e in ipairs(r.items) do byItem[e.item.itemID] = e end
 check(byItem[1002].class == ns.UPGRADE_NONE and byItem[1002].voidcore.class == ns.UPGRADE_NONE, "excluded item ignored for drop and Voidcore")
 ns:SetItemState(1002, nil)
-ns.cdb.itemState[1008] = "want" -- legacy flat table: moved into the spec on first use
+ns:SetItemState(1008, "want")
 ns:Evaluate()
 r3 = ns:ResultForDungeon(ns.dungeonByMapID[249])
 byItem = {}
 for _, e in ipairs(r3.items) do byItem[e.item.itemID] = e end
 check(byItem[1008].class == ns.UPGRADE_WANT, "wanted item counts")
-check(ns:GetItemState(1008) == "want" and next(ns.cdb.itemState) == nil and ns.cdb.itemStateBySpec[72][1008] == "want", "legacy item state migrated per spec")
+check(ns.cdb.itemStateBySpec[72][1008] == "want", "item state kept per spec")
 check(r3.wanted == 1 and ns:WantedItemIDs()[1] == 1008, "wanted item counted for its dungeon")
 local sum = ns:SlotSummary()
 check(sum[5].wanted[1] and sum[5].wanted[1].eval.item.itemID == 1008 and sum[5].wanted[1].source == "Kings' Rest", "slot summary names the wanted item and where it drops")
@@ -906,7 +917,7 @@ check(sum[1].bestDrop and sum[1].bestDrop.eval.item.itemID == 1001, "slot summar
 BAGS[1008] = 1
 ns:CheckObtained()
 RunTimers()
-check(ns:GetItemState(1008) == nil and ns.cdb.obtained[72][1008], "wanted item removed once obtained")
+check(ns:GetItemState(1008) == nil, "wanted item removed once obtained")
 BAGS[1008] = nil
 -- a drop already in the bags is owned: no upgrade, no roll
 do
@@ -1001,7 +1012,7 @@ link, kind = ns:LinkForContext(head, ns.dropCtx)
 check(kind == "exact" and BonusOfLink(link) == BonusFor(3, 4), "tooltip link at +5 is Champion 4/6")
 ns:SetTargetKey(10); RunTimers()
 ns:StepTargetKey(1); RunTimers()
-check(ns.db.targetKey == 10 and not ns.dropCtx.isVoidcore and ns:TargetLabel() == "+10", "the selector stops at the last useful key")
+check(ns.db.targetKey == 10 and not ns.dropCtx.isVoidcore, "the selector stops at the last useful key")
 local vcCtx = { ilvl = 318, step = 1, track = ns.trackByKey.Myth, key = 10, isVoidcore = true }
 link, kind = ns:LinkForContext(head, vcCtx)
 check(kind == "exact" and BonusOfLink(link) == BonusFor(5, 1), "Voidcore tooltip link is Myth 1/6 via discovered bonus id")
@@ -1086,7 +1097,7 @@ check(evaluations == 1 and ns.evaluatePending == nil, "the pending evaluation ru
 
 -- calibration: stale defaults (previous season, 13 lower); equipped items must rebuild the table
 ns.db.trackOverride = nil
-ns.SEASON_DATA_LATEST.championBase = 279
+ns.SEASON.championBase = 279
 ns.trackOffsetApplied = nil
 ns:ApplyTrackDefaults()
 check(ns.trackByKey.Hero.min == 292, "stale defaults applied (Hero base 292)")
@@ -1095,7 +1106,7 @@ check(ns.trackOffsetApplied == 13, "stale defaults auto-calibrated by +13 (" .. 
 check(ns.trackByKey.Hero.min == 305 and ns.trackByKey.Hero.max == 321, "Hero after calibration = 305-321")
 check(ns.db.calibratedChampionBase == 292, "calibrated base remembered in saved variables")
 -- no defaults at all: bootstrap purely from gear
-ns.SEASON_DATA_LATEST.championBase = 0
+ns.SEASON.championBase = 0
 ns.db.calibratedChampionBase = nil
 ns.tracksCalibrated = nil
 ns:ApplyTrackDefaults()
@@ -1106,7 +1117,7 @@ check(ns.gear[1].track and ns.gear[1].track.key == "Champion" and ns.gear[1].pot
 local t = ns:ResolveTrack("Held", 2, 6, 308)
 check(t and t.key == "Hero", "non-English track name resolved structurally")
 check(ns:TrackKeyForName("Held") == "Hero", "non-English name learned")
-ns.SEASON_DATA_LATEST.championBase = 292
+ns.SEASON.championBase = 292
 
 -- activity mapping
 check(ns:DungeonForActivity(1749) == ns.dungeonByMapID[587], "activity id -> dungeon via fallback table")
@@ -1339,7 +1350,7 @@ check(#ns:GetStatProfiles() == 0 and ns:GetStatWeights() == nil, "/sf pawn delet
 SlashCmdList.SLOTFILLER("pawn " .. PAWN)
 RunTimers()
 check(ns:GetStatWeights() and ns:GetStatWeights().name == "Erunak - Restoration Raid", "/sf pawn imports with original casing")
-ns:SetStatWeights(nil)
+ns:SetActiveStatProfile(nil)
 RunTimers()
 ns.loot.dungeons[9999] = nil
 
@@ -1468,11 +1479,10 @@ do
     ns:SetActiveStatProfile(activeBefore)
     -- the AMR box, with the setups the AMR addon imported
     _G.AskMrRobot = { Show = function() end, Hide = function() end, db = { char = { GearSetups = {
-        { Label = "Restoration Raid", SpecSlot = 3, Gear = { [1] = { id = 7001 }, [5] = { id = 5005 } } },
-        { Label = "Restoration M+", SpecSlot = 3, Gear = { [1] = { id = 5001 } } },
-        { Label = "Elemental", SpecSlot = 1, Gear = {} },
+        { Label = "Restoration Raid", SpecSlot = 1, Gear = { [1] = { id = 7001 }, [5] = { id = 5005 } } },
+        { Label = "Restoration M+", SpecSlot = 1, Gear = { [1] = { id = 5001 } } },
+        { Label = "Elemental", SpecSlot = 3, Gear = {} },
     } } } }
-    _G.GetSpecialization = _G.GetSpecialization or function() return 3 end
     local setups = ns:AmrSetups()
     check(#setups == 3 and setups[1].label == "Restoration Raid" and setups[1].gear[1] == 7001, "the setups AMR imported are read with their gear")
     _G.AmrUiFrame1 = NewWidget("Frame", "AmrUiFrame1"); AmrUiFrame1:SetSize(800, 600); AmrUiFrame1:Show()
@@ -1799,7 +1809,7 @@ ns:SetRatingRuns(nil)
 ns.uiExpandedRatingMapID = nil
 ns:ToggleOptionsPanel()
 check(ns:CurrentPage() == "settings", "Settings tab shown")
-ns:RefreshOptionsPanel()
+ns:RefreshSettings()
 local settings = SlotFillerFrame.Pages.settings
 check(settings.StatModeTabs.selectedTabID == "auto" and settings.statHint:GetText() == "From your equipped gear", "Settings shows Auto and where the order comes from")
 local before = { unpack((ns:GetStatPriority())) }
