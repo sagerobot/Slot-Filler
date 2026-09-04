@@ -9,7 +9,9 @@ local Style, UI = ns.Style, ns.UI
 
 local box
 
--- { { label, specSlot, gear = { [slotID] = itemID } }, ... }
+-- { { label, specSlot, loadoutID, gear = { [slotID] = itemID } }, ... };
+-- loadoutID is the talent loadout the setup was optimized with, when the
+-- website knew it.
 function ns:AmrSetups()
     local amr = AskMrRobot
     local list = type(amr) == "table" and amr.db and amr.db.char and amr.db.char.GearSetups
@@ -21,7 +23,7 @@ function ns:AmrSetups()
                 local id = tonumber(type(obj) == "table" and obj.id or nil)
                 if type(slot) == "number" and id then gear[slot] = id end
             end
-            out[#out + 1] = { label = setup.Label, specSlot = tonumber(setup.SpecSlot), gear = gear }
+            out[#out + 1] = { label = setup.Label, specSlot = tonumber(setup.SpecSlot), loadoutID = tonumber(setup.TalentConfigId), gear = gear }
         end
     end
     return out
@@ -46,19 +48,21 @@ function ns:AmrSetupFor(scale)
     return best
 end
 
--- Ties every profile of this spec to its AMR setup: the setup's gear as
--- the gear the weights are for, its label as the equipment set. Returns
--- the labels of setups for this spec that have no profile yet.
-function ns:LinkProfilesToAmr()
+-- Ties every profile of `specID` (default: the evaluated spec) to its AMR
+-- setup: the setup's gear as the gear the weights are for, its label as
+-- the equipment set, its talent loadout as the build. Returns the labels
+-- of setups for the active spec that have no profile yet.
+function ns:LinkProfilesToAmr(specID)
     local setups = self:AmrSetups()
     if #setups == 0 then return {} end
     local covered = {}
-    for _, scale in ipairs(self:GetStatProfiles()) do
+    for _, scale in ipairs(self:GetStatProfiles(specID)) do
         local setup = self:AmrSetupFor(scale)
         if setup then
             local snap = {}
             for slot, id in pairs(setup.gear) do snap[slot] = { itemID = id, ilvl = 0, name = (C_Item.GetItemInfo(id)) } end
             scale.gear, scale.setName, scale.amrSetup = snap, setup.label, setup.label
+            scale.loadoutID = setup.loadoutID or scale.loadoutID
             covered[setup.label] = true
         end
     end
@@ -104,24 +108,24 @@ local function Build()
     result:SetPoint("LEFT", label, "RIGHT", 10, 0)
     result:SetPoint("RIGHT", -10, 0)
     local function Import()
-        local scale, err = ns:ImportPawnString(edit:GetText() or "")
+        local scale, err, specID = ns:ImportPawnString(edit:GetText() or "")
         if not scale then
             result:SetText("|cffff5555" .. tostring(err) .. "|r")
             return
         end
         edit:SetText("")
         edit:ClearFocus()
-        local missing = ns:LinkProfilesToAmr()
+        local missing = ns:LinkProfilesToAmr(specID)
         local setup = ns:AmrSetupFor(scale)
         local set = setup and setup.label or ns:StatProfileSet(scale)
-        local text = string.format("Saved as %s%s.", tostring(scale.name), set and (", for the " .. set .. " setup") or "")
+        local text = string.format("Saved as %s for %s%s.", tostring(scale.name), (ns:SpecName(specID)), set and (", for the " .. set .. " setup") or "")
         if #missing > 0 then text = text .. "  Still without weights: " .. table.concat(missing, ", ") end
         result:SetText(text)
         ns:Fire("SETTINGS_CHANGED")
     end
     import:SetScript("OnClick", Import)
     edit:SetScript("OnEnterPressed", Import)
-    UI.Tip(import, "ANCHOR_TOP", "Import weights", "Saves the Pawn string as a weight profile for this spec, remembering the gear you wear now. It follows the equipment set of the same name.")
+    UI.Tip(import, "ANCHOR_TOP", "Import weights", "Saves the Pawn string as a weight profile for the spec it names, remembering the gear you wear now. It follows the equipment set of the same name.")
     box.Edit, box.Result, box.Import = edit, result, import
     return box
 end

@@ -84,7 +84,7 @@ function ns:BuildSettingsPage(page)
         box:SetPoint("RIGHT", button, "LEFT", -6, 0)
         button:SetScript("OnClick", onSubmit)
         box:SetScript("OnEnterPressed", onSubmit)
-        return row, box, button
+        return row, box, button, lbl
     end
     -- Left-to-right small tabs on the right of a row; onSelect(id).
     local function Switch(row, defs, w, onSelect)
@@ -178,25 +178,42 @@ function ns:BuildSettingsPage(page)
     end)
     UI.Tip(profDelete, "ANCHOR_RIGHT", "Delete profile", "Forget the selected profile. Stats are ranked from your gear until you pick another one.")
 
-    local pawnBox
+    -- The spec a pasted string is saved for: detected from the string's
+    -- own Spec= (falling back to the evaluated spec), or one picked here.
+    -- Not remembered: the next paste detects again.
+    local pawnBox, pawnSpec
+    local pawnSpecID = nil
     local function ImportPawn()
-        local scale, err = ns:ImportPawnString(pawnBox:GetText() or "")
+        local scale, err, specID = ns:ImportPawnString(pawnBox:GetText() or "", nil, pawnSpecID)
         if scale then
             pawnBox:SetText("")
             pawnBox:ClearFocus()
-            ns:Print(string.format("Saved Pawn scale \"%s\" as weight profile \"%s\" for %s and switched to it.", scale.pawnName or "?", scale.name, specName()))
-            local name = ns:SpecName(ns:GetEvalSpecID())
-            if scale.spec and name and scale.spec:lower() ~= tostring(name):lower() then
-                ns:Print(string.format("Note: the scale says %s %s; it is applied to %s.", scale.class or "", scale.spec, name))
-            end
+            ns:Print(ns:PawnSavedText(scale, specID))
         else
             ns:Print("Could not read that Pawn string:", err)
         end
         ns:RefreshSettings()
     end
-    _, pawnBox = EditRow("Pawn string", "Import", ImportPawn)
+    local pawnRow, pawnLabel
+    pawnRow, pawnBox, _, pawnLabel = EditRow("Pawn string", "Import", ImportPawn)
+    local function RefreshPawnSpec()
+        pawnSpec.Text:SetText(pawnSpecID and (ns:SpecName(pawnSpecID)) or "|cffaaaaaaDetect spec|r")
+    end
+    pawnSpec = UI.Dropdown(pawnRow, 108, 20, function()
+        local entries = { { text = "Detect from the string", checked = pawnSpecID == nil, onClick = function() pawnSpecID = nil; RefreshPawnSpec() end,
+            tip = { "Detect the spec", "Reads the Spec= in the string itself. A string for another class, or without one, goes to the spec the window shows." } } }
+        for _, spec in ipairs(ns:GetPlayerSpecs()) do
+            entries[#entries + 1] = { text = spec.name, checked = pawnSpecID == spec.id, onClick = function() pawnSpecID = spec.id; RefreshPawnSpec() end,
+                tip = { spec.name, "The next paste is saved for " .. spec.name .. ", whatever the string says." } }
+        end
+        return entries
+    end)
+    pawnSpec:SetPoint("LEFT", pawnLabel, "RIGHT", 12, 0)
+    pawnBox:SetPoint("LEFT", pawnSpec, "RIGHT", 4, 0)
+    RefreshPawnSpec()
+    panel.pawnSpec, panel.pawnBox = pawnSpec, pawnBox
     UI.Tip(pawnBox, "ANCHOR_RIGHT", "Pawn string",
-        "Paste a Pawn scale string for this spec (from Pawn, Raidbots or a guide) and press Enter. It is saved as a new profile named after the scale and used right away: its weights order the stats, and tooltips compare a drop's weighted value with your equipped item.")
+        "Paste a Pawn scale string (from Pawn, Raidbots or a guide) and press Enter. It is saved as a new profile named after the scale, under the spec it names, and used right away: its weights order the stats, and tooltips compare a drop's weighted value with your equipped item.")
 
     local nameBox
     local function RenameProfile()

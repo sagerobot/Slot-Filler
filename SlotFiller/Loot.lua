@@ -66,18 +66,25 @@ function ns:GetPlayerSpecs()
     return specs
 end
 
--- The spec button: follow the loot spec, then each spec in turn.
-function ns:CycleEvalSpec()
-    local specs = self:GetPlayerSpecs()
-    local cur, nextID = self.cdb.evalSpecID, nil
-    if cur == nil then
-        nextID = specs[1] and specs[1].id
-    else
-        for i, s in ipairs(specs) do
-            if s.id == cur then nextID = specs[i + 1] and specs[i + 1].id; break end
-        end
+-- One of this character's specs by ID, name or the start of its name
+-- (case-insensitive): { id, name, icon } or nil.
+function ns:FindPlayerSpec(what)
+    local n = tonumber(what)
+    local lower = type(what) == "string" and what:lower():gsub("^%s+", ""):gsub("%s+$", "") or ""
+    if not n and lower == "" then return nil end
+    local starts
+    for _, s in ipairs(self:GetPlayerSpecs()) do
+        local name = tostring(s.name):lower()
+        if s.id == n or name == lower then return s end
+        if lower ~= "" and name:sub(1, #lower) == lower then starts = starts or s end
     end
-    self.cdb.evalSpecID = nextID
+    return starts
+end
+
+-- Pins the window to `specID`; nil follows the loot spec again.
+function ns:SetEvalSpec(specID)
+    if specID == self.cdb.evalSpecID then return end
+    self.cdb.evalSpecID = specID
     self.loot = nil
     self:EnsureLoot(false)
     self:Fire("SETTINGS_CHANGED")

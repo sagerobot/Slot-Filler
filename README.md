@@ -120,7 +120,7 @@ lines at that key's own level, plus the rating a timed run would add.
   judged at that difficulty, and so are raid drops on the Gear tab.
 - **Gear tab sources**: the strip on the Gear tab lists drops from M+, Raid
   or Both (the default).
-- **Spec**: follows your loot spec by default; click the spec button to pin one.
+- **Spec**: follows your loot spec by default; the spec dropdown pins one.
 - **Wanted list and Voidcore targets** (per spec): star a drop under a
   dungeon or a boss. Wanted items count for their dungeon or boss, show in
   the Gear tab and in group and keystone tooltips. The purple star marks a
@@ -167,22 +167,31 @@ lines at that key's own level, plus the rating a timed run would add.
 - **Weight profiles**: a profile remembers the gear you wore when it was
   imported; once you wear something else the toolbar says "(gear changed)"
   and the tooltip lists the slots, a reminder to re-sim and paste again.
-  A profile follows the equipment set of the same name (Ask Mr. Robot's
-  sets are named after its setups, its scales end in the setup name), so
-  wearing that set switches to it.
+  A profile follows a talent build: the loadout of the same name, else
+  the loadout that was selected when it was pasted (an Ask Mr. Robot
+  profile follows the loadout its setup was optimized with). Loading that
+  loadout switches to it. Without a loadout to go by, it follows the
+  equipment set of the same name (Ask Mr. Robot's sets are named after
+  its setups, its scales end in the setup name), so wearing that set
+  switches to it. A profile picked from the dropdown stays until the
+  loadout or the set changes again.
 - **Ask Mr. Robot**: with its addon loaded, a box under its window takes
   the Pawn string the optimizer shows next to the import code. The import
-  code carries every setup's label and gear, so a profile named after a
-  setup is tied to it: its "made for" gear is the setup's gear, wearing
-  that set switches to it, and the box lists setups still without
-  weights.
+  code carries every setup's label, gear and talent loadout, so a profile
+  named after a setup is tied to it: its "made for" gear is the setup's
+  gear, loading that loadout or wearing that set switches to it, and the
+  box lists setups still without weights.
 - **Weight profiles**: newer weights for the same Pawn scale or the same
   Ask Mr. Robot setup replace the old profile in place, so re-simming
   never leaves stale weights behind.
 - **Weight profiles**: paste a Pawn scale string (from Pawn, Raidbots or a
   guide) into Settings, or `/sf pawn <string>`. Each import is saved as a
-  named profile for the spec, so a healer can keep a Raid and a Mythic+
-  profile and switch between them with the Weights button in the window
+  named profile for the spec the string itself names (its `Spec=`), so
+  pasting Restoration weights while playing Enhancement still lands them on
+  Restoration; a string for another class, or without a spec, goes to the
+  spec the window shows. The Spec picker next to the box, or
+  `/sf pawn <spec> <string>`, chooses outright. A healer can keep a Raid and
+  a Mythic+ profile and switch between them with the Weights button in the window
   (the toolbar also shows the resulting stat order). In Auto mode the
   profile in use orders the stats, and every drop gets a weighted value at the selected
   key's item level (primary stat included) that tooltips compare with your
@@ -256,7 +265,7 @@ over a drop to see how it would do as a Voidcore roll.
 /sf match           toggle Match level (drops judged as upgraded free to your slot's level)
 /sf rescan          rescan loot tables from the Adventure Guide
 /sf options         open settings
-/sf pawn <string>   save a Pawn scale as a weight profile for the current spec and use it
+/sf pawn [spec] <string>   save a Pawn scale as a weight profile for the spec it names (or the one given) and use it
 /sf pawn            list the spec's profiles: use <name>, rename <n> <name>, delete <name>, clear
 /sf status          print what the addon knows (season, tracks, gear, cache)
 /sf reset overrides|cache|all

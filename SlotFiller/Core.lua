@@ -187,6 +187,7 @@ end)
 
 ns:RegisterEvent("PLAYER_LOGIN", function()
     ns.playerClassName, ns.playerClassID = select(2, UnitClass("player"))
+    ns.playerName = UnitName("player")
     ns:Fire("LOGIN")
 end)
 
@@ -282,9 +283,21 @@ local function PawnCommand(text)
             ns:Print("Usage: /sf pawn rename <n> <new name>")
         end
     else
-        local scale, err = ns:ImportPawnString(text)
+        -- "/sf pawn <spec> ( Pawn: ... )" saves for that spec; otherwise the
+        -- string's own Spec= decides, then the evaluated spec
+        local specID
+        local specWord, rest = text:match("^([^%(]-)%s*(%(.*)$")
+        if specWord and specWord ~= "" then
+            local spec = ns:FindPlayerSpec(specWord)
+            if not spec then
+                ns:Print(string.format("No spec called \"%s\" on this character. /sf pawn <spec> <string> takes one of yours.", specWord))
+                return
+            end
+            specID, text = spec.id, rest
+        end
+        local scale, err, savedTo = ns:ImportPawnString(text, nil, specID)
         if scale then
-            ns:Print(string.format("Saved Pawn scale \"%s\" as weight profile \"%s\" for %s and switched to it.", scale.pawnName or "?", scale.name, specName))
+            ns:Print(ns:PawnSavedText(scale, savedTo))
         else
             ns:Print("Could not read that Pawn string:", err)
         end
@@ -320,7 +333,7 @@ local HELP = {
     "  /sf link       diagnostics for item tooltips at the selected key",
     "  /sf voidcore   diagnostics for the bonus roll pools (Voidcache tooltips)",
     "  /sf lfg        diagnostics for the Premade Groups listings on screen",
-    "  /sf pawn <string>   save a Pawn scale as a weight profile for the current spec and use it",
+    "  /sf pawn [spec] <string>   save a Pawn scale as a weight profile for the spec it names (or the one given) and use it",
     "  /sf pawn       list weight profiles: use <name>, rename <n> <name>, delete <name>, clear",
     "  /sf reset overrides|cache|all",
     "  /sf debug      toggle debug output",

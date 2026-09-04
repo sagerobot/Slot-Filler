@@ -485,12 +485,13 @@ function IO.Build(page)
     strip.Order = UI.Dropdown(strip, 150, 20, function()
         local order = ns:RatingOrder()
         return {
-            { text = "Rating gained", checked = order == "rating", onClick = function() ns:SetRatingOrder("rating") end },
-            { text = "Gear drops", checked = order == "gear", onClick = function() ns:SetRatingOrder("gear") end },
+            { text = "Rating gained", checked = order == "rating", onClick = function() ns:SetRatingOrder("rating") end,
+                tip = { "Rating gained", "Highest key first." } },
+            { text = "Gear drops", checked = order == "gear", onClick = function() ns:SetRatingOrder("gear") end,
+                tip = { "Gear drops", "The dungeons with the most usable drops at the planned key first." } },
         }
     end)
     strip.Order:SetPoint("LEFT", 0, 0)
-    UI.Tip(strip.Order, "ANCHOR_BOTTOM", "Order", "Rating gained: highest key first. Gear drops: the dungeons with the most usable drops at the planned key first.")
     strip.Note = UI.Line(strip, 10, "LEFT", 1, 1, 1, 0.53)
     strip.Note:SetPoint("LEFT", strip.Order, "RIGHT", 8, 0)
     strip.Note:SetPoint("RIGHT", 0, 0)

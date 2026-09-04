@@ -19,27 +19,8 @@ local function BuildToolbar()
     bar:SetHeight(TOOLBAR_H)
     frame.Toolbar = bar
 
-    local specBtn = CreateFrame("Button", nil, bar)
-    specBtn:SetSize(176, 22)
-    specBtn:SetPoint("TOPLEFT", 0, 0)
-    specBtn.Icon = specBtn:CreateTexture(nil, "ARTWORK")
-    specBtn.Icon:SetSize(16, 16)
-    specBtn.Icon:SetPoint("LEFT", 4, 0)
-    Style.SquareIcon(specBtn.Icon)
-    specBtn.Arrow = specBtn:CreateTexture(nil, "OVERLAY")
-    specBtn.Arrow:SetAtlas("Azerite-PointingArrow")
-    specBtn.Arrow:SetSize(12, 9)
-    specBtn.Arrow:SetPoint("RIGHT", -6, 0)
-    specBtn.Arrow:SetVertexColor(1, 1, 1, 0.7)
-    specBtn.Text = UI.Line(specBtn, 11)
-    specBtn.Text:SetPoint("LEFT", specBtn.Icon, "RIGHT", 5, 0)
-    specBtn.Text:SetPoint("RIGHT", specBtn.Arrow, "LEFT", -4, 0)
-    Style.Button(specBtn, { "Icon", "Arrow" })
-    specBtn:SetScript("OnClick", function() ns:CycleEvalSpec() end)
-    UI.Tip(specBtn, "ANCHOR_BOTTOM", "Spec to evaluate",
-        "Click to cycle: follow loot spec, or a specific spec.",
-        "Loot is filtered the same way the Adventure Guide filters it. The wanted list is kept per spec.")
-    bar.SpecButton = specBtn
+    bar.SpecButton = UI.SpecDropdown(bar, 176, 22)
+    bar.SpecButton:SetPoint("TOPLEFT", 0, 0)
 
     local keyPlus = UI.TextButton(bar, "+", 22, 22, 13)
     keyPlus:SetPoint("TOPRIGHT", 0, 0)
@@ -103,10 +84,7 @@ end
 
 local function RefreshToolbar()
     local bar = frame.Toolbar
-    local specID = ns:GetEvalSpecID()
-    local specName, specIcon = ns:SpecName(specID)
-    bar.SpecButton.Icon:SetTexture(specIcon or 134400)
-    bar.SpecButton.Text:SetText(ns.cdb.evalSpecID and specName or (specName .. " |cff888888(loot spec)|r"))
+    UI.RefreshSpecButton(bar.SpecButton)
     -- the key stepper is a Mythic+ thing; the Raid tab has its difficulty strip
     local raidTab = frame.page == "raid"
     for _, w in ipairs({ bar.KeyBox, bar.KeyPlus, bar.KeyMinus, bar.KeyLabel }) do w:SetShown(not raidTab) end

@@ -138,6 +138,7 @@ end
 
 _G.C_AddOns = { GetAddOnMetadata = function() return "test" end, LoadAddOn = function() return true end, IsAddOnLoaded = function() return false end }
 _G.UnitClass = function() return "Warrior", "WARRIOR", 1 end
+_G.UnitName = function() return "Erunak", nil end
 
 -- specialization, as the 12.1 client has it: the active spec under
 -- C_SpecializationInfo, the loot spec and per-ID lookups as globals
@@ -147,7 +148,26 @@ _G.C_SpecializationInfo = {
     GetNumSpecializationsForClassID = function() return 3 end,
 }
 _G.GetLootSpecialization = function() return 0 end
-_G.GetSpecializationInfoByID = function(id) return id, id == 72 and "Fury" or "Arms", "", 132347 end
+-- talent loadouts: [specID] = { { id, name }, ... }; SELECTED_LOADOUT[specID] = id
+_G.LOADOUTS = {}
+_G.SELECTED_LOADOUT = {}
+_G.C_ClassTalents = {
+    GetConfigIDsBySpecID = function(specID)
+        local ids = {}
+        for _, l in ipairs(LOADOUTS[specID] or {}) do ids[#ids + 1] = l.id end
+        return ids
+    end,
+    GetLastSelectedSavedConfigID = function(specID) return SELECTED_LOADOUT[specID] or 0 end,
+}
+_G.C_Traits = {
+    GetConfigInfo = function(id)
+        for _, list in pairs(LOADOUTS) do
+            for _, l in ipairs(list) do if l.id == id then return { ID = id, name = l.name, type = 1 } end end
+        end
+        return nil
+    end,
+}
+_G.GetSpecializationInfoByID = function(id) return id, ({ [71] = "Arms", [72] = "Fury", [73] = "Protection" })[id] or "Arms", "", 132347 end
 _G.GetSpecializationInfoForClassID = function(_, i) return ({ 71, 72, 73 })[i], ({ "Arms", "Fury", "Protection" })[i], "", 1 end
 
 -------------------------------------------------------------------------------
@@ -1333,6 +1353,33 @@ check(fr.items[1].value and math.abs(fr.items[1].value - (ns:ItemValue(Link(1009
 check(ns:RenameStatProfile(1, "  Raid ") and ns:StatProfileName() == "Raid", "rename trims and applies")
 check(not ns:RenameStatProfile(1, "  "), "empty name rejected")
 check(ns:FindStatProfile("mythic+") == 2 and ns:FindStatProfile("2") == 2 and ns:FindStatProfile("nope") == nil, "profiles found by name (any case) or number")
+-- the spec a string is saved for: its own Spec= when it is one of ours
+do
+    local PROT = '( Pawn: v1: "Sager - Protection": Class=Warrior, Spec=Protection, Strength=70, HasteRating=60, MasteryRating=50, Versatility=40, CritRating=30 )'
+    local ARMS = '( Pawn: v1: "Sager - Arms": Class=Warrior, Spec=Arms, Strength=70, CritRating=60, MasteryRating=50, HasteRating=40, Versatility=30 )'
+    check(ns:PawnScaleSpecID(ns:ParsePawnString(PROT)) == 73 and ns:PawnScaleSpecID(ns:ParsePawnString(PAWN)) == nil,
+        "a Warrior Protection string is for Protection; a Shaman's is for no spec of ours")
+    check(ns:PawnScaleSpecID({ class = "Warrior", spec = "PROTECTION" }) == 73 and ns:PawnScaleSpecID({ spec = "arms" }) == 71 and ns:PawnScaleSpecID({ class = "DeathKnight", spec = "Blood" }) == nil,
+        "class and spec match in any case; the class is optional")
+    local beforeEval = #ns:GetStatProfiles()
+    local prot, protIndex, protSpec = ns:ImportPawnString(PROT)
+    check(prot and protSpec == 73 and protIndex == 1 and ns.cdb.statProfiles[73][1] == prot and ns.cdb.statProfile[73] == 1 and ns.cdb.statMode[73] == "auto",
+        "importing while evaluating Fury saves the Protection string under Protection and switches that spec to it")
+    check(#ns:GetStatProfiles() == beforeEval and ns:StatProfileName() == "Raid", "the evaluated spec keeps its profiles and the one in use")
+    check(prot.gear == nil and #ns:StatProfileGearDiff(prot) == 0, "gear worn for another spec is not remembered as what the weights were made for")
+    check(ns:PawnSavedText(prot, 73):find("for Protection", 1, true) and ns:PawnSavedText(prot, 73):find("The window shows Fury", 1, true),
+        "the chat line names the spec it went to and points at the spec button")
+    check(ns:PawnSavedText(imported, 72):find("The string says Shaman Restoration", 1, true), "a string for another class says so")
+    local arms, _, armsSpec = ns:ImportPawnString(ARMS, nil, 73)
+    check(arms and armsSpec == 73 and ns.cdb.statProfiles[73][2] == arms and ns.cdb.statProfile[73] == 2, "a spec given outright wins over the string's own")
+    check(ns:FindPlayerSpec("prot").id == 73 and ns:FindPlayerSpec("ARMS").id == 71 and ns:FindPlayerSpec(72).name == "Fury" and ns:FindPlayerSpec("holy") == nil,
+        "specs found by name, the start of one, or ID")
+    SlashCmdList.SLOTFILLER("pawn arms " .. PROT)
+    check(#ns.cdb.statProfiles[71] == 1 and ns.cdb.statProfiles[71][1].pawnName == "Sager - Protection", "/sf pawn <spec> <string> saves for that spec")
+    SlashCmdList.SLOTFILLER("pawn holy " .. PROT)
+    check(#ns.cdb.statProfiles[71] == 1 and #ns.cdb.statProfiles[73] == 2, "a spec we do not have saves nothing")
+    ns.cdb.statProfiles[71], ns.cdb.statProfiles[73], ns.cdb.statProfile[73], ns.cdb.statMode[73] = nil, nil, nil, nil
+end
 SlashCmdList.SLOTFILLER("pawn use Mythic+")
 RunTimers()
 check(ns:StatProfileName() == "Mythic+", "/sf pawn use <name>")
@@ -1407,12 +1454,42 @@ check(not IsSpecial(), "back next to the Group Finder, Escape is its again")
 RunTimers()
 local wb = SlotFillerFrame.Toolbar.WeightsButton
 check(wb and wb.Text:GetText():find("none", 1, true) ~= nil, "toolbar shows that no weight profile is in use")
+check(wb:GetScript("OnEnter") == nil, "the weights button carries no tooltip of its own (it would sit on the open menu)")
 wb:GetScript("OnClick")(wb)
 check(ns.UI.IsMenuShown(), "weights menu opens")
+do
+    local entries = wb.entries()
+    local profiles = ns:GetStatProfiles()
+    check(#entries == #profiles + 1 and type(entries[1].tip) == "function" and type(entries[#entries].tip) == "table", "each menu row carries its own tip: the profile's weights, or what None means")
+    local lines = {}
+    local tip = { AddLine = function(_, t) lines[#lines + 1] = tostring(t) end }
+    entries[1].tip(tip)
+    check(lines[1] == tostring(profiles[1].name) and lines[2]:find("Intellect", 1, true), "a profile row's tip names it and lists its weights (" .. tostring(lines[1]) .. ": " .. tostring(lines[2]) .. ")")
+end
 wb:GetScript("OnClick")(wb)
 check(not ns.UI.IsMenuShown(), "clicking again closes it")
+do
+    local sb = SlotFillerFrame.Toolbar.SpecButton
+    check(sb.entries and sb:GetScript("OnEnter") == nil, "the spec button is a dropdown without a tooltip of its own")
+    local entries = sb.entries()
+    check(#entries == 4 and entries[1].checked and entries[1].text:find("Loot spec", 1, true) and entries[1].tip and entries[4].text == "Protection",
+        "its menu: follow the loot spec (checked, with a tip), then every spec")
+    entries[4].onClick()
+    check(ns.cdb.evalSpecID == 73 and ns:GetEvalSpecID() == 73 and sb.Text:GetText() == "Protection", "picking Protection pins the window to it")
+    check(sb.entries()[4].checked and not sb.entries()[1].checked, "the pinned spec is the checked row")
+    sb.entries()[1].onClick()
+    check(ns.cdb.evalSpecID == nil and ns:GetEvalSpecID() == 72 and sb.Text:GetText():find("loot spec", 1, true), "Loot spec follows the loot spec again")
+end
 ns:SetActiveStatProfile(1)
-check(wb.Text:GetText():find("Erunak", 1, true) ~= nil, "toolbar shows the profile in use (" .. tostring(wb.Text:GetText()) .. ")")
+check(wb.Text:GetText():find("Weights:|r Restoration Raid", 1, true) ~= nil, "toolbar shows the profile in use without the character name (the spec stays: this Warrior has no Restoration) (" .. tostring(wb.Text:GetText()) .. ")")
+do
+    local specName = ns:SpecName(ns:GetEvalSpecID())
+    check(ns:StatProfileLabel({ name = "Erunak - " .. specName .. " M+" }) == "M+" and ns:StatProfileLabel({ name = "erunak-" .. specName:lower() .. ": Keys" }) == "Keys",
+        "labels drop a leading character name and spec name in any case, with any separator")
+    check(ns:StatProfileLabel({ name = specName .. " Raid" }) == "Raid" and ns:StatProfileLabel({ name = "Erunak" }) == "Erunak" and ns:StatProfileLabel({ name = "Mythic+" }) == "Mythic+",
+        "either prefix alone goes; a name that is just the character name, or has no prefix, stays whole")
+    check(ns:StatProfileLabel({ name = "Erunak - " .. specName }) == specName, "a name that is only the two prefixes keeps the spec")
+end
 ns:SetActiveStatProfile(nil)
 RunTimers()
 ns.uiExpandedMapID = 587
@@ -1511,24 +1588,49 @@ do
     check(raidIndex == 1 and mplusIndex == n0 + 1 and ns:StatProfileSet(raidProfile) == "Raid" and ns:StatProfileSet(mplusProfile) == "M+",
         "profiles match sets by the end of their names: 'Erunak - Restoration Raid' -> Raid (replacing the old Raid weights), the Pawn name '... M+' -> M+")
     _G.EQUIPPED_SET = "M+"
-    check(ns:FollowEquipmentSet() == mplusIndex and ns:GetActiveStatProfile() == mplusIndex, "wearing the M+ set switches to its profile")
+    check(ns:FollowBuild() == mplusIndex and ns:GetActiveStatProfile() == mplusIndex, "wearing the M+ set switches to its profile")
     _G.EQUIPPED_SET = "Raid"
     ns:ScanGear()
     local followed = ns:StatProfileSet(ns:GetStatProfiles()[ns:GetActiveStatProfile()])
     check(followed == "Raid" and ns:GetActiveStatProfile() ~= mplusIndex, "a gear change while wearing the Raid set switches to a profile that follows Raid")
     local stays = ns:GetActiveStatProfile()
+    ns:SetActiveStatProfile(mplusIndex)
+    ns:ScanGear()
+    check(ns:GetActiveStatProfile() == mplusIndex, "a profile picked by hand stays through gear changes while the set worn is the same")
+    check(ns:FollowBuild(true) == stays and ns:GetActiveStatProfile() == stays, "forced, it follows the set again")
     _G.EQUIPPED_SET = nil
-    check(ns:FollowEquipmentSet() == nil and ns:GetActiveStatProfile() == stays, "no set worn: the profile stays")
+    check(ns:FollowBuild() == nil and ns:GetActiveStatProfile() == stays, "no set worn: the profile stays")
+
+    -- talent loadouts: the build selected for the spec beats the set worn
+    LOADOUTS[72] = { { id = 101, name = "Raid" }, { id = 102, name = "M+" } }
+    check(select(2, ns:StatProfileLoadout(raidProfile)) == "Raid" and select(2, ns:StatProfileLoadout(mplusProfile)) == "M+",
+        "profiles match loadouts by the end of their names too")
+    SELECTED_LOADOUT[72] = 102
+    _G.EQUIPPED_SET = "Raid"
+    check(ns:FollowBuild() == mplusIndex and ns:GetActiveStatProfile() == mplusIndex, "the M+ loadout selected while wearing the Raid set: the M+ profile wins")
+    SELECTED_LOADOUT[72] = 101
+    ns.eventFrame._scripts.OnEvent(ns.eventFrame, "TRAIT_CONFIG_UPDATED", 1)
+    RunTimers()
+    check(ns:GetActiveStatProfile() ~= mplusIndex and ns:StatProfileLoadout(ns:GetStatProfiles()[ns:GetActiveStatProfile()]) == 101,
+        "loading the Raid loadout switches to a profile that follows it")
+    local pasted = ns:ImportPawnString('( Pawn: v1: "Erunak - Something Else": Class=Shaman, Spec=Restoration, Intellect=80, HasteRating=61, MasteryRating=50, CritRating=30, Versatility=20 )')
+    check(pasted and pasted.loadoutID == 101 and select(2, ns:StatProfileLoadout(pasted)) == "Raid", "a string pasted with no matching name follows the loadout selected when it was pasted")
+    ns:DeleteStatProfile((ns:FindStatProfile("Erunak - Something Else")))
+    SELECTED_LOADOUT[72] = nil
+    LOADOUTS[72] = nil
+    _G.EQUIPPED_SET = nil
+    ns:FollowBuild()
     ns:DeleteStatProfile(mplusIndex)
     ns:SetActiveStatProfile(activeBefore)
     -- the AMR box, with the setups the AMR addon imported
     _G.AskMrRobot = { Show = function() end, Hide = function() end, db = { char = { GearSetups = {
-        { Label = "Restoration Raid", SpecSlot = 1, Gear = { [1] = { id = 7001 }, [5] = { id = 5005 } } },
+        { Label = "Restoration Raid", SpecSlot = 1, Gear = { [1] = { id = 7001 }, [5] = { id = 5005 } }, TalentConfigId = "101" },
         { Label = "Restoration M+", SpecSlot = 1, Gear = { [1] = { id = 5001 } } },
         { Label = "Elemental", SpecSlot = 3, Gear = {} },
     } } } }
     local setups = ns:AmrSetups()
-    check(#setups == 3 and setups[1].label == "Restoration Raid" and setups[1].gear[1] == 7001, "the setups AMR imported are read with their gear")
+    check(#setups == 3 and setups[1].label == "Restoration Raid" and setups[1].gear[1] == 7001 and setups[1].loadoutID == 101 and setups[2].loadoutID == nil,
+        "the setups AMR imported are read with their gear and talent loadout")
     _G.AmrUiFrame1 = NewWidget("Frame", "AmrUiFrame1"); AmrUiFrame1:SetSize(800, 600); AmrUiFrame1:Show()
     local amrBox = ns:ShowAmrBox()
     check(amrBox and amrBox:IsShown() and amrBox.Edit and amrBox.Import, "the Pawn box appears under AMR's window")
@@ -1539,6 +1641,7 @@ do
     check(#ns:GetStatProfiles() == before and saved.weights.CRIT == 70 and amrBox.Result:GetText():find("for the Restoration Raid setup", 1, true),
         "pasting a Pawn string there replaces that setup's profile (" .. tostring(amrBox.Result:GetText()) .. ")")
     check(saved and saved.amrSetup == "Restoration Raid" and saved.setName == "Restoration Raid" and saved.gear[1].itemID == 7001, "the profile's gear is the setup's gear, its set the setup's label")
+    check(saved.loadoutID == 101, "and its talent loadout the setup's")
     local diff = ns:StatProfileGearDiff(saved)
     check(#diff >= 1 and diff[1].slotID == 1 and diff[1].from.itemID == 7001 and diff[1].to.itemID == 5001, "wearing the old helm instead of the setup's counts as changed gear")
     check(amrBox.Result:GetText():find("Still without weights:", 1, true) and amrBox.Result:GetText():find("Restoration M+", 1, true) and not amrBox.Result:GetText():find("Elemental", 1, true),

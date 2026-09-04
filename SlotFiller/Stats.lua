@@ -141,13 +141,32 @@ function ns:ParsePawnString(text)
     return scale
 end
 
+local function Letters(text)
+    return type(text) == "string" and text:lower():gsub("[^%a]", "") or ""
+end
+
+-- The player's spec a Pawn string is for, from its Class= and Spec= (Pawn
+-- writes them in English without spaces: "DeathKnight", "BeastMastery").
+-- nil when the string is another class's, names no spec, or names one
+-- this client does not call that.
+function ns:PawnScaleSpecID(scale)
+    if type(scale) ~= "table" then return nil end
+    local class, spec = Letters(scale.class), Letters(scale.spec)
+    if spec == "" then return nil end
+    if class ~= "" and class ~= Letters(self.playerClassName) then return nil end
+    for _, s in ipairs(self:GetPlayerSpecs()) do
+        if Letters(s.name) == spec then return s.id end
+    end
+    return nil
+end
+
 -------------------------------------------------------------------------------
 -- Weight profiles. Every imported scale is kept per spec under a name, so a
 -- healer can hold a raid set and a Mythic+ set and switch between them:
 --   cdb.statProfiles[specID] = { scale, ... }
 --       scale = { name, pawnName, class, spec, primary, imported, weights = { CRIT = n, ... },
 --                 gear = snapshot the weights were made for, setName = equipment set followed,
---                 amrSetup = Ask Mr. Robot setup label }
+--                 loadoutID = talent loadout followed, amrSetup = Ask Mr. Robot setup label }
 --   cdb.statProfile[specID]  = index of the active one; nil = none (rank by gear)
 -------------------------------------------------------------------------------
 local function ProfileList(self, specID)
@@ -192,6 +211,31 @@ function ns:StatProfileName()
     return scale and scale.name or nil
 end
 
+-- `name` without the leading `prefixes`, in order, and the separators
+-- after them.
+local function Strip(name, prefixes)
+    for _, prefix in ipairs(prefixes) do
+        if type(prefix) == "string" and #prefix > 0 and name:lower():sub(1, #prefix) == prefix:lower() then
+            name = name:sub(#prefix + 1)
+        end
+        name = name:gsub("^[%s%-–:|/]+", "")
+    end
+    return name
+end
+
+-- The name as the window shows it: without the character name and the
+-- spec name that Pawn scales start with ("Erunak - Restoration Raid" ->
+-- "Raid"), since both are known where it is shown. The full name is what
+-- Settings edits and the row tips show. When nothing would be left only
+-- the character name goes ("Erunak - Elemental" -> "Elemental"); a name
+-- that is just the character name stays whole.
+function ns:StatProfileLabel(scale)
+    local name = CleanName(scale and scale.name)
+    local short = Strip(name, { self.playerName, (self:SpecName(self:GetEvalSpecID())) })
+    if short == "" then short = Strip(name, { self.playerName }) end
+    return short ~= "" and short or name
+end
+
 -- Switches the evaluated spec to profile `index`; nil = none.
 function ns:SetActiveStatProfile(index)
     local list, specID = ProfileList(self)
@@ -229,12 +273,13 @@ local function Replaces(self, list, scale, name)
     return nil
 end
 
--- Saves a parsed scale as a profile for the evaluated spec, named `name`
--- (default: the Pawn scale's own name), and switches to it. Newer weights
--- for the same scale or setup replace the old profile in place, keeping
--- its name unless one is given. Returns index, scale.
-function ns:AddStatProfile(scale, name)
-    local list, specID = ProfileList(self)
+-- Saves a parsed scale as a profile for `specID` (default: the evaluated
+-- spec), named `name` (default: the Pawn scale's own name), and switches
+-- that spec to it. Newer weights for the same scale or setup replace the
+-- old profile in place, keeping its name unless one is given. Returns
+-- index, scale, specID.
+function ns:AddStatProfile(scale, name, specID)
+    local list, specID = ProfileList(self, specID)
     if not list or type(scale) ~= "table" or type(scale.weights) ~= "table" then return nil end
     scale.pawnName = scale.pawnName or scale.name
     name = CleanName(name)
@@ -254,16 +299,22 @@ function ns:AddStatProfile(scale, name)
         index = #list
     end
     -- the gear the weights were made for, to say when it has changed, and
-    -- the equipment set they belong to
+    -- the equipment set they belong to; gear worn for another spec is not
+    -- what these weights were made for
+    local worn = specID == self:GetActiveSpecID()
     scale.imported = time()
-    scale.gear = self:GearSnapshot()
-    scale.setName = self:StatProfileSet(scale) or self:EquippedSetName()
-    -- an Ask Mr. Robot setup of the same name: its gear is what the weights are for
-    self:LinkProfilesToAmr()
+    scale.gear = worn and self:GearSnapshot() or nil
+    scale.setName = self:StatProfileSet(scale) or (worn and self:EquippedSetName()) or nil
+    -- the talent build: the loadout named like the profile, else the one
+    -- selected for the spec now
+    scale.loadoutID = self:StatProfileLoadout(scale, specID) or self:SelectedLoadout(specID)
+    -- an Ask Mr. Robot setup of the same name: its gear and loadout are what the weights are for
+    self:LinkProfilesToAmr(specID)
     -- pasting weights means "use these": the order follows them from now on
     SetMode(self, specID, "auto")
-    self:SetActiveStatProfile(index)
-    return index, scale
+    self.cdb.statProfile[specID] = index
+    self:Fire("SETTINGS_CHANGED")
+    return index, scale, specID
 end
 
 function ns:RenameStatProfile(index, name)
@@ -292,14 +343,30 @@ function ns:DeleteStatProfile(index)
     return true
 end
 
--- Parses a Pawn string and saves it as the active profile for the evaluated
--- spec. Returns the scale and its index, or nil and a reason.
-function ns:ImportPawnString(text, name)
+-- Parses a Pawn string and saves it as the active profile for `specID`:
+-- when nil, the spec the string names if it is one of this character's,
+-- else the evaluated spec. Returns the scale, its index and the spec it
+-- went to, or nil and a reason.
+function ns:ImportPawnString(text, name, specID)
     local scale, err = self:ParsePawnString(text)
     if not scale then return nil, err end
-    local index, stored = self:AddStatProfile(scale, name)
+    specID = specID or self:PawnScaleSpecID(scale)
+    local index, stored, savedTo = self:AddStatProfile(scale, name, specID)
     if not index then return nil, "no spec to save it for" end
-    return stored, index
+    return stored, index, savedTo
+end
+
+-- Chat line after an import: which profile, which spec, and a pointer
+-- when that is not the spec the window shows.
+function ns:PawnSavedText(scale, specID)
+    local name = (self:SpecName(specID)) or "this spec"
+    local text = string.format("Saved Pawn scale \"%s\" as weight profile \"%s\" for %s and switched to it.", scale.pawnName or "?", scale.name, name)
+    if specID ~= self:GetEvalSpecID() then
+        text = text .. string.format(" The window shows %s; the spec button switches.", (self:SpecName(self:GetEvalSpecID())))
+    elseif scale.spec and not self:PawnScaleSpecID(scale) then
+        text = text .. string.format(" The string says %s %s.", scale.class or "", scale.spec)
+    end
+    return text
 end
 
 -- Slots worn differently from the gear a profile was made for:
@@ -340,11 +407,10 @@ function ns:EquippedSetName()
     return (select(2, EquipmentSets()))
 end
 
--- The set a profile follows: the one recorded at import, else the set
--- whose name ends the profile's name or its Pawn scale name (Ask Mr.
--- Robot names scales "<char> - <spec> <setup>" and sets "<setup>").
-local function SetFor(scale, names)
-    if scale.setName then return scale.setName end
+-- The longest of `names` that ends the profile's name or its Pawn scale
+-- name (Ask Mr. Robot names scales "<char> - <spec> <setup>", its sets
+-- and loadouts "<setup>"), or nil.
+local function NameEnding(scale, names)
     local best
     for _, candidate in ipairs({ scale.name, scale.pawnName }) do
         local lname = type(candidate) == "string" and candidate:lower() or ""
@@ -356,27 +422,100 @@ local function SetFor(scale, names)
     return best
 end
 
+-- The set a profile follows: the one recorded at import, else by name.
+local function SetFor(scale, names)
+    return scale.setName or NameEnding(scale, names)
+end
+
 function ns:StatProfileSet(scale)
     if not scale then return nil end
     return SetFor(scale, (EquipmentSets()))
 end
 
--- Switches to the profile that follows the worn equipment set, if there
--- is one for this spec. Returns its index, or nil.
-function ns:FollowEquipmentSet()
-    local names, worn = EquipmentSets()
-    if not worn then return nil end
-    local active = self:GetActiveStatProfile()
-    for i, scale in ipairs(self:GetStatProfiles()) do
-        if SetFor(scale, names) == worn then
-            if active ~= i then self:SetActiveStatProfile(i) end
-            return i
-        end
+-------------------------------------------------------------------------------
+-- Talent loadouts: a profile follows the build it was made for
+-------------------------------------------------------------------------------
+-- The saved loadouts of a spec, { { id, name }, ... }, and the ID of the
+-- one selected for it (nil when the spec runs on no saved loadout).
+local function Loadouts(specID)
+    local list = {}
+    if not specID then return list, nil end
+    for _, id in ipairs(C_ClassTalents.GetConfigIDsBySpecID(specID) or {}) do
+        local info = C_Traits.GetConfigInfo(id)
+        if info and type(info.name) == "string" then list[#list + 1] = { id = id, name = info.name } end
     end
+    local selected = C_ClassTalents.GetLastSelectedSavedConfigID(specID)
+    if type(selected) ~= "number" or selected == 0 then selected = nil end
+    return list, selected
+end
+
+local function LoadoutName(list, id)
+    for _, l in ipairs(list) do if l.id == id then return l.name end end
     return nil
 end
 
-ns:On("GEAR_UPDATED", function() ns:FollowEquipmentSet() end)
+-- The loadout a profile follows: the one recorded at import (or tied to
+-- its Ask Mr. Robot setup) while it still exists, else the loadout whose
+-- name ends the profile's name. Returns id, name or nil.
+local function LoadoutFor(scale, list)
+    if scale.loadoutID and LoadoutName(list, scale.loadoutID) then return scale.loadoutID, LoadoutName(list, scale.loadoutID) end
+    local names = {}
+    for i, l in ipairs(list) do names[i] = l.name end
+    local name = NameEnding(scale, names)
+    for _, l in ipairs(list) do if l.name == name then return l.id, l.name end end
+    return nil
+end
+
+-- id, name of the loadout selected for `specID` (default: the evaluated spec).
+function ns:SelectedLoadout(specID)
+    local list, selected = Loadouts(specID or self:GetEvalSpecID())
+    return selected, selected and LoadoutName(list, selected) or nil
+end
+
+function ns:StatProfileLoadout(scale, specID)
+    if not scale then return nil end
+    return LoadoutFor(scale, (Loadouts(specID or self:GetEvalSpecID())))
+end
+
+-- Switches to the profile that follows the build in use: the talent
+-- loadout selected for the spec first, else the worn equipment set. Acts
+-- once per change of build, so a profile picked by hand stays until the
+-- loadout or the set changes again; `force` re-follows regardless. A
+-- profile already in use that follows the build is kept. Returns the
+-- index followed, or nil.
+function ns:FollowBuild(force)
+    local specID = self:GetEvalSpecID()
+    if not specID or not self.cdb then return nil end
+    local loadouts, selected = Loadouts(specID)
+    local names, worn = EquipmentSets()
+    local key = string.format("%d:%s:%s", specID, tostring(selected), tostring(worn))
+    if not force and key == self.followedBuild then return nil end
+    self.followedBuild = key
+    local list, active = self:GetStatProfiles(), self:GetActiveStatProfile()
+    local function Pick(matches)
+        local first
+        for i, scale in ipairs(list) do
+            if matches(scale) then
+                if i == active then return i end
+                first = first or i
+            end
+        end
+        return first
+    end
+    local i = selected and Pick(function(scale) return LoadoutFor(scale, loadouts) == selected end)
+    if not i and worn then i = Pick(function(scale) return SetFor(scale, names) == worn end) end
+    if i and i ~= active then self:SetActiveStatProfile(i) end
+    return i
+end
+
+ns:On("GEAR_UPDATED", function() ns:FollowBuild() end)
+ns:On("SPEC_CHANGED", function() ns:FollowBuild() end)
+ns:On("LOGIN", function()
+    -- loading another loadout, or editing the build, changes the talents
+    local function Changed() ns:Schedule("build", 0.5, function() ns:FollowBuild() end) end
+    ns:RegisterEvent("TRAIT_CONFIG_UPDATED", Changed)
+    ns:RegisterEvent("SELECTED_LOADOUT_CHANGED", Changed)
+end)
 
 -- Chat listing for /sf pawn.
 function ns:PrintStatProfiles()

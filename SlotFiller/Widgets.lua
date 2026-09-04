@@ -153,11 +153,28 @@ end
 
 -------------------------------------------------------------------------------
 -- Dropdown: a block button showing the current choice; clicking it opens a
--- flat menu underneath. entries() returns { { text, checked, onClick }, ... }.
--- One menu frame serves every dropdown; it closes on a click anywhere else.
+-- flat menu underneath. entries() returns { { text, checked, onClick, tip }, ... }.
+-- The button itself carries no tooltip (one would sit on top of the open
+-- menu); each row's `tip` shows beside the menu while it is hovered, as a
+-- title and lines, or a function(GameTooltip) that fills it. One menu frame
+-- serves every dropdown; it closes on a click anywhere else.
 -------------------------------------------------------------------------------
 local menu
 local MENU_ROW_H = 20
+
+local function ShowRowTip(row)
+    local tip = row.entry and row.entry.tip
+    if not tip then return end
+    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+    if type(tip) == "function" then
+        tip(GameTooltip)
+    else
+        local lines = type(tip) == "table" and tip or { tip }
+        GameTooltip:AddLine(lines[1] or "")
+        for i = 2, #lines do GameTooltip:AddLine(lines[i], 0.8, 0.8, 0.8, true) end
+    end
+    GameTooltip:Show()
+end
 
 function UI.CloseMenu()
     if menu and menu:IsShown() then menu:Hide() end
@@ -187,6 +204,8 @@ local function MenuRow(i)
         UI.CloseMenu()
         if self.entry.onClick then self.entry.onClick() end
     end)
+    row:SetScript("OnEnter", ShowRowTip)
+    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
     menu.rows[i] = row
     return row
 end
@@ -203,9 +222,11 @@ local function OpenMenu(owner, entries)
         menu:SetScript("OnEvent", function(self)
             if self:IsShown() and not self:IsMouseOver() and not (self.owner and self.owner:IsMouseOver()) then self:Hide() end
         end)
-        menu:SetScript("OnHide", function(self) self.owner = nil end)
+        -- a row hidden under the mouse never gets OnLeave: drop its tip too
+        menu:SetScript("OnHide", function(self) self.owner = nil; GameTooltip:Hide() end)
     end
     if menu:IsShown() and menu.owner == owner then UI.CloseMenu(); return end
+    GameTooltip:Hide()
     menu.owner = owner
     local r, g, b = Style.Accent()
     for i, entry in ipairs(entries) do
@@ -224,17 +245,26 @@ local function OpenMenu(owner, entries)
     menu:Show()
 end
 
--- w = nil leaves the width to the caller's anchors.
-function UI.Dropdown(parent, w, h, entries)
+-- w = nil leaves the width to the caller's anchors; withIcon adds a 16px
+-- b.Icon before the text.
+function UI.Dropdown(parent, w, h, entries, withIcon)
     local b = CreateFrame("Button", nil, parent)
     if w then b:SetWidth(w) end
     b:SetHeight(h or 22)
     b.Arrow = Arrow(b, 12, 9, 0.7)
     b.Arrow:SetPoint("RIGHT", -6, 0)
     b.Text = UI.Line(b, 11)
-    b.Text:SetPoint("LEFT", 6, 0)
+    if withIcon then
+        b.Icon = b:CreateTexture(nil, "ARTWORK")
+        b.Icon:SetSize(16, 16)
+        b.Icon:SetPoint("LEFT", 4, 0)
+        Style.SquareIcon(b.Icon)
+        b.Text:SetPoint("LEFT", b.Icon, "RIGHT", 5, 0)
+    else
+        b.Text:SetPoint("LEFT", 6, 0)
+    end
     b.Text:SetPoint("RIGHT", b.Arrow, "LEFT", -4, 0)
-    Style.Button(b, { "Arrow" })
+    Style.Button(b, withIcon and { "Icon", "Arrow" } or { "Arrow" })
     b.entries = entries
     b:SetScript("OnClick", function(self) OpenMenu(self, self.entries()) end)
     b:HookScript("OnHide", function(self) if menu and menu.owner == self then UI.CloseMenu() end end)
@@ -242,67 +272,87 @@ function UI.Dropdown(parent, w, h, entries)
 end
 
 -- Weight profile picker (toolbar and Settings): the profiles saved for the
--- evaluated spec on this character, plus "None".
+-- evaluated spec on this character, plus "None". Hovering a profile's row
+-- shows its weights, its set, and the gear it was made for.
+local function ProfileRowTip(scale)
+    return function(tip)
+        tip:AddLine(tostring(scale.name))
+        tip:AddLine(ns:StatWeightsText(scale), 0.8, 0.8, 0.8, true)
+        if scale.pawnName and scale.pawnName ~= scale.name then
+            tip:AddLine("Pawn scale: " .. tostring(scale.pawnName), 0.6, 0.6, 0.6, true)
+        end
+        local _, loadout = ns:StatProfileLoadout(scale)
+        if loadout then tip:AddLine("Follows the " .. loadout .. " talent loadout: switched to when you load it.", 0.6, 0.6, 0.6, true) end
+        local set = ns:StatProfileSet(scale)
+        if set then tip:AddLine("Follows the " .. set .. " equipment set: switched to when you wear it" .. (loadout and " and no profile follows the loadout" or "") .. ".", 0.6, 0.6, 0.6, true) end
+        local diff = ns:StatProfileGearDiff(scale)
+        if #diff > 0 then
+            tip:AddLine(" ")
+            tip:AddLine(string.format("|cffff9900Gear changed since these weights were made|r (%d slot%s):", #diff, #diff == 1 and "" or "s"), 1, 1, 1, true)
+            for i, d in ipairs(diff) do
+                if i > 6 then tip:AddLine("  ...", 0.7, 0.7, 0.7); break end
+                local slot = ns.SLOT_BY_ID[d.slotID]
+                tip:AddLine(string.format("  %s: %s -> %s", slot and (slot.name or slot.key) or "?",
+                    d.from and (d.from.name or ("item " .. tostring(d.from.itemID))) or "empty",
+                    d.to and ns.ItemName(d.to) or "empty"), 0.8, 0.8, 0.8, true)
+            end
+            if scale.amrSetup then
+                tip:AddLine("This is the gear of the " .. scale.amrSetup .. " setup from Ask Mr. Robot; wear that set, or re-sim and paste the new Pawn string.", 0.8, 0.8, 0.8, true)
+            else
+                tip:AddLine("Weights shift with the gear they were simmed for: re-run Ask Mr. Robot and paste the new Pawn string in Settings.", 0.8, 0.8, 0.8, true)
+            end
+        elseif scale.gear then
+            tip:AddLine(scale.amrSetup and ("|cff888888Made for the " .. scale.amrSetup .. " setup's gear, which you wear now.|r") or "|cff888888Made for the gear you wear now.|r", 1, 1, 1, true)
+        end
+    end
+end
+
 local function StatProfileEntries()
     local active = ns:GetActiveStatProfile()
     local entries = {}
     for i, scale in ipairs(ns:GetStatProfiles()) do
-        entries[#entries + 1] = { text = tostring(scale.name), checked = active == i, onClick = function() ns:SetActiveStatProfile(i) end }
+        entries[#entries + 1] = { text = ns:StatProfileLabel(scale), checked = active == i, onClick = function() ns:SetActiveStatProfile(i) end, tip = ProfileRowTip(scale) }
     end
-    entries[#entries + 1] = { text = "None |cff888888(rank stats from gear)|r", checked = active == nil, onClick = function() ns:SetActiveStatProfile(nil) end }
+    entries[#entries + 1] = { text = "None |cff888888(rank stats from gear)|r", checked = active == nil, onClick = function() ns:SetActiveStatProfile(nil) end,
+        tip = { "No weight profile", "Stats are ranked by how much of each your equipped gear carries. Paste a Pawn string in Settings to add a profile." } }
     return entries
 end
 
 function UI.RefreshStatProfileButton(b)
     local _, scale = ns:GetActiveStatProfile()
     local changed = scale and #ns:StatProfileGearDiff(scale) or 0
-    b.Text:SetText("|cffaaaaaaWeights:|r " .. (scale and scale.name or "|cff888888none|r") .. (changed > 0 and "  |cffff9900(gear changed)|r" or ""))
-end
-
-local function StatProfileTooltip(self)
-    GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-    GameTooltip:AddLine("Stat weights")
-    local _, scale = ns:GetActiveStatProfile()
-    if scale then
-        GameTooltip:AddLine(tostring(scale.name), 1, 1, 1)
-        GameTooltip:AddLine(ns:StatWeightsText(scale), 0.8, 0.8, 0.8, true)
-        if scale.pawnName and scale.pawnName ~= scale.name then
-            GameTooltip:AddLine("Pawn scale: " .. tostring(scale.pawnName), 0.6, 0.6, 0.6, true)
-        end
-        local set = ns:StatProfileSet(scale)
-        if set then GameTooltip:AddLine("Follows the " .. set .. " equipment set: switched to when you wear it.", 0.6, 0.6, 0.6, true) end
-        local diff = ns:StatProfileGearDiff(scale)
-        if #diff > 0 then
-            GameTooltip:AddLine(" ")
-            GameTooltip:AddLine(string.format("|cffff9900Gear changed since these weights were made|r (%d slot%s):", #diff, #diff == 1 and "" or "s"), 1, 1, 1, true)
-            for i, d in ipairs(diff) do
-                if i > 6 then GameTooltip:AddLine("  ...", 0.7, 0.7, 0.7); break end
-                local slot = ns.SLOT_BY_ID[d.slotID]
-                GameTooltip:AddLine(string.format("  %s: %s -> %s", slot and (slot.name or slot.key) or "?",
-                    d.from and (d.from.name or ("item " .. tostring(d.from.itemID))) or "empty",
-                    d.to and ns.ItemName(d.to) or "empty"), 0.8, 0.8, 0.8, true)
-            end
-            if scale.amrSetup then
-                GameTooltip:AddLine("This is the gear of the " .. scale.amrSetup .. " setup from Ask Mr. Robot; wear that set, or re-sim and paste the new Pawn string.", 0.8, 0.8, 0.8, true)
-            else
-                GameTooltip:AddLine("Weights shift with the gear they were simmed for: re-run Ask Mr. Robot and paste the new Pawn string in Settings.", 0.8, 0.8, 0.8, true)
-            end
-        elseif scale.gear then
-            GameTooltip:AddLine(scale.amrSetup and ("|cff888888Made for the " .. scale.amrSetup .. " setup's gear, which you wear now.|r") or "|cff888888Made for the gear you wear now.|r", 1, 1, 1, true)
-        end
-    else
-        GameTooltip:AddLine("No profile in use: stats are ranked by how much of each your equipped gear carries.", 0.8, 0.8, 0.8, true)
-    end
-    GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("Click to switch between the weight profiles saved for this spec. Every Pawn string imported in Settings becomes one, so you can keep a Raid and a Mythic+ profile and swap here.", 0.8, 0.8, 0.8, true)
-    GameTooltip:Show()
+    b.Text:SetText("|cffaaaaaaWeights:|r " .. (scale and ns:StatProfileLabel(scale) or "|cff888888none|r") .. (changed > 0 and "  |cffff9900(gear changed)|r" or ""))
 end
 
 function UI.StatProfileDropdown(parent, w, h)
     local b = UI.Dropdown(parent, w, h, StatProfileEntries)
-    b:HookScript("OnEnter", StatProfileTooltip)
-    b:HookScript("OnLeave", function() GameTooltip:Hide() end)
     UI.RefreshStatProfileButton(b)
+    return b
+end
+
+-- Spec picker (toolbar): follow the loot spec, or pin one of the
+-- character's specs.
+local function SpecEntries()
+    local pinned = ns.cdb.evalSpecID
+    local entries = { { text = "Loot spec |cff888888(" .. (ns:SpecName(ns:GetLootSpecID())) .. ")|r", checked = pinned == nil,
+        onClick = function() ns:SetEvalSpec(nil) end,
+        tip = { "Follow the loot spec", "Drops, the wanted list and the weights follow whichever spec your loot is set to." } } }
+    for _, spec in ipairs(ns:GetPlayerSpecs()) do
+        entries[#entries + 1] = { text = spec.name, checked = pinned == spec.id, onClick = function() ns:SetEvalSpec(spec.id) end }
+    end
+    return entries
+end
+
+function UI.RefreshSpecButton(b)
+    local specID = ns:GetEvalSpecID()
+    local specName, specIcon = ns:SpecName(specID)
+    b.Icon:SetTexture(specIcon or 134400)
+    b.Text:SetText(ns.cdb.evalSpecID and specName or (specName .. " |cff888888(loot spec)|r"))
+end
+
+function UI.SpecDropdown(parent, w, h)
+    local b = UI.Dropdown(parent, w, h, SpecEntries, true)
+    UI.RefreshSpecButton(b)
     return b
 end
 
