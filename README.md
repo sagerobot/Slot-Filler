@@ -194,8 +194,15 @@ lines at that key's own level, plus the rating a timed run would add.
   hide empty dungeons and bosses, wanted list sharing, weight profiles and stat priority,
   dock side (left, right, or free; a free window can be set to move with the
   Dungeons & Raids window for people who move that with another addon),
-  auto-show rules, LFG badges, keystone tooltips, rating gain on listings
+  when the window opens by itself (always, on the Premade Groups tab, or
+  never), LFG badges, keystone tooltips, rating gain on listings
   and keystones, scale, manual track shift.
+- **The drawer tab.** Whenever the Dungeons & Raids window is open and the
+  Slot Filler window is folded away, a thin tab with an arrow sits on its
+  edge: click it to open the window, the window's X to fold it back. What
+  you open or fold by hand stays that way until the Dungeons & Raids
+  window closes. Escape closes the Dungeons & Raids window and this one
+  with it; a window opened on its own with `/sf` closes on Escape too.
 
 ## Look and feel
 

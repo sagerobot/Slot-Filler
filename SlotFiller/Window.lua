@@ -133,7 +133,6 @@ local function BuildFrame()
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:Hide()
-    tinsert(UISpecialFrames, "SlotFillerFrame")
     Style.Shell(frame)
 
     -- title band (drag handle in free mode)
@@ -210,12 +209,19 @@ local function BuildFrame()
         Style.Tab(tab)
     end
 
-    frame:SetScript("OnShow", function() ns:RefreshWindow() end)
+    frame:SetScript("OnShow", function()
+        ns:UpdateDrawer()
+        ns:RefreshWindow()
+    end)
     frame:SetScript("OnHide", function()
         -- following the Group Finder: keep the screen position current for
         -- the next time the window opens on its own
         if ns.db.anchorSide == "free" and ns.db.freeFollow then ns:RememberFreePosition() end
         ns:RestoreGroupFinderOffset()
+        -- folded away by hand (the X) with the Group Finder open: stays
+        -- folded until it is reopened
+        if not frame.autoHide and PVEFrame and PVEFrame:IsShown() then ns.userExpanded = false end
+        ns:UpdateDrawer()
     end)
     return frame
 end
@@ -274,8 +280,11 @@ end
 -------------------------------------------------------------------------------
 -- Docking on the left. The Group Finder usually opens at the left edge of
 -- the screen, leaving no room: it is pushed right (UIPanel "xoffset" first,
--- a direct move as fallback) and restored when the window closes.
+-- a direct move as fallback) and restored when nothing is docked any more.
+-- What docks is the window, or the drawer tab that stands in for it.
 -------------------------------------------------------------------------------
+local drawer
+local DRAWER_W = 16
 local push = { offset = nil, moved = nil }
 
 local function PVEToUIParent(v)
@@ -292,11 +301,18 @@ function ns:RestoreGroupFinderOffset()
     push.offset, push.moved = nil, nil
 end
 
--- How far (in UIParent units) the window sticks out past the left screen edge.
-local function Overhang()
-    local left = frame:GetLeft()
+-- Whether a frame docks on the Group Finder's left: the window on the left
+-- side, the drawer on any side but the right.
+local function DocksLeft(f)
+    if f == drawer then return ns.db.anchorSide ~= "right" end
+    return ns.db.anchorSide == "left"
+end
+
+-- How far (in UIParent units) a docked frame sticks out past the left screen edge.
+local function Overhang(f)
+    local left = f:GetLeft()
     if not left then return 0 end
-    local px = left * frame:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    local px = left * f:GetEffectiveScale() / UIParent:GetEffectiveScale()
     if px >= 0 then return 0 end
     return math.ceil(-px) + 4
 end
@@ -314,7 +330,7 @@ local function FindLeftNeighbour()
     local bestLeft, top, bottom = pl * ps, pt * ps, pb * ps
     for _, name in ipairs(NEIGHBOURS) do
         local f = _G[name]
-        if f and f ~= frame and f:IsVisible() then
+        if f and f ~= frame and f ~= drawer and f:IsVisible() then
             local l, t, b = f:GetLeft(), f:GetTop(), f:GetBottom()
             local s = f:GetEffectiveScale() or 1
             if l and t and b and t * s > bottom and b * s < top and l * s < bestLeft then best, bestLeft = f, l * s end
@@ -328,25 +344,25 @@ local function LeftNeighbour()
     return (ok and f) or PVEFrame
 end
 
-local function DockLeft()
+local function DockLeft(f)
     local neighbour = LeftNeighbour()
-    frame.leftNeighbour, frame.dockedTo = neighbour, neighbour
-    frame:ClearAllPoints()
-    frame:SetPoint("TOPRIGHT", neighbour, "TOPLEFT", -2, 0)
+    f.leftNeighbour, f.dockedTo = neighbour, neighbour
+    f:ClearAllPoints()
+    f:SetPoint("TOPRIGHT", neighbour, "TOPLEFT", -2, 0)
     -- A neighbour parked at the screen edge leaves no room: dock on the
     -- Group Finder itself and let the push below make space. (With
     -- EllesmereUI the character sheet follows the Group Finder, so the next
     -- watch tick re-docks outside it.)
-    if neighbour ~= PVEFrame and Overhang() > 0 then
-        frame.dockedTo = PVEFrame
-        frame:ClearAllPoints()
-        frame:SetPoint("TOPRIGHT", PVEFrame, "TOPLEFT", -2, 0)
+    if neighbour ~= PVEFrame and Overhang(f) > 0 then
+        f.dockedTo = PVEFrame
+        f:ClearAllPoints()
+        f:SetPoint("TOPRIGHT", PVEFrame, "TOPLEFT", -2, 0)
     end
 end
 
-local function PushGroupFinder()
+local function PushGroupFinder(f)
     if InCombatLockdown() or not ns.db.pushGroupFinder then return end
-    local needed = Overhang()
+    local needed = Overhang(f)
     if needed <= 0 then return end
     -- 1) UIPanel layout offset: survives the panel manager re-laying out the frame
     local ok, current = pcall(GetUIPanelAttribute, PVEFrame, "xoffset")
@@ -356,9 +372,9 @@ local function PushGroupFinder()
     pcall(UIParent_ManageFramePositions)
     -- 2) verify once the layout has settled; move the frame directly if needed
     C_Timer.After(0.05, function()
-        if not frame:IsShown() or not PVEFrame:IsShown() or InCombatLockdown() or ns.db.anchorSide ~= "left" then return end
-        DockLeft()
-        local still = Overhang()
+        if not f:IsShown() or not PVEFrame:IsShown() or InCombatLockdown() or not DocksLeft(f) then return end
+        DockLeft(f)
+        local still = Overhang(f)
         if still > 0 then
             if not push.moved then
                 local point, _, relPoint, x, y = PVEFrame:GetPoint(1)
@@ -368,7 +384,7 @@ local function PushGroupFinder()
             local top = PVEToUIParent(PVEFrame:GetTop() or 0) - UIParent:GetHeight()
             PVEFrame:ClearAllPoints()
             PVEFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left + still, top)
-            DockLeft()
+            DockLeft(f)
         end
     end)
 end
@@ -402,8 +418,8 @@ function ns:AnchorWindow()
             self:RestoreGroupFinderOffset()
             frame:SetPoint("TOPLEFT", PVEFrame, "TOPRIGHT", 2, 0)
         else
-            DockLeft()
-            PushGroupFinder()
+            DockLeft(frame)
+            PushGroupFinder(frame)
         end
         return
     end
@@ -432,28 +448,111 @@ function ns:AnchorWindow()
     end
 end
 
+-- The drawer tab sits on the edge the window docks to (the left in free
+-- mode too), its arrow pointing the way the window opens.
+local function AnchorDrawer()
+    if not (drawer and PVEFrame and PVEFrame:IsShown()) then return end
+    drawer:SetScale(ns.db.scale)
+    drawer:SetHeight(PVEFrame:GetHeight() * PVEFrame:GetEffectiveScale() / drawer:GetEffectiveScale())
+    drawer:ClearAllPoints()
+    drawer.dockedTo, drawer.leftNeighbour = nil, nil
+    if ns.db.anchorSide == "right" then
+        drawer:SetPoint("TOPLEFT", PVEFrame, "TOPRIGHT", 2, 0)
+        drawer.Arrow:SetRotation(math.rad(90))
+    else
+        DockLeft(drawer)
+        PushGroupFinder(drawer)
+        drawer.Arrow:SetRotation(math.rad(-90))
+    end
+end
+
 -- While docked on the left, keep checking that nothing has moved onto the
--- window: the UI panel manager re-lays the Group Finder out when another
--- panel opens, and the character sheet may arrive at its left edge.
+-- docked frame: the UI panel manager re-lays the Group Finder out when
+-- another panel opens, and the character sheet may arrive at its left edge.
 local function OnUpdateWatch(self, elapsed)
     self.watchElapsed = (self.watchElapsed or 0) + elapsed
     if self.watchElapsed < 0.5 then return end
     self.watchElapsed = 0
-    if PVEFrame and PVEFrame:IsShown() and ns.db.anchorSide == "left" and not InCombatLockdown() then
-        if LeftNeighbour() ~= frame.leftNeighbour then
-            ns:AnchorWindow()
-        elseif Overhang() > 0 then
-            PushGroupFinder()
-        end
+    if not (PVEFrame and PVEFrame:IsShown()) or InCombatLockdown() or not DocksLeft(self) then return end
+    if LeftNeighbour() ~= self.leftNeighbour then
+        if self == frame then ns:AnchorWindow() else AnchorDrawer() end
+    elseif Overhang(self) > 0 then
+        PushGroupFinder(self)
     end
+end
+
+-------------------------------------------------------------------------------
+-- The drawer: a thin tab on the Group Finder's edge whenever the window is
+-- folded away. A click opens the window; the window's X folds it back.
+-------------------------------------------------------------------------------
+local function BuildDrawer()
+    if drawer then return drawer end
+    drawer = CreateFrame("Button", "SlotFillerDrawer", UIParent)
+    drawer:SetSize(DRAWER_W, FREE_HEIGHT)
+    drawer:SetFrameStrata("MEDIUM")
+    drawer:Hide()
+    drawer.Arrow = drawer:CreateTexture(nil, "OVERLAY")
+    drawer.Arrow:SetAtlas("Azerite-PointingArrow")
+    drawer.Arrow:SetSize(12, 9)
+    drawer.Arrow:SetPoint("CENTER", 0, 0)
+    local function Tint() drawer.Arrow:SetVertexColor(Style.Accent()) end
+    Tint()
+    Style.OnLooksChanged(Tint)
+    Style.Button(drawer, { "Arrow" })
+    drawer:SetScript("OnClick", function() ns:ShowWindow(true) end)
+    drawer:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, ns.db.anchorSide == "right" and "ANCHOR_RIGHT" or "ANCHOR_LEFT")
+        GameTooltip:AddLine("Slot Filler")
+        GameTooltip:AddLine("Click to open the window. Its X folds it back here.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    drawer:HookScript("OnLeave", function() GameTooltip:Hide() end)
+    drawer:SetScript("OnUpdate", OnUpdateWatch)
+    drawer:SetScript("OnHide", function() ns:RestoreGroupFinderOffset() end)
+    return drawer
+end
+
+-- The drawer shows whenever the Group Finder is open and the window is not.
+function ns:UpdateDrawer()
+    if not self.db then return end
+    if PVEFrame and PVEFrame:IsShown() and not self:IsWindowShown() then
+        BuildDrawer()
+        drawer:Show()
+        AnchorDrawer()
+    elseif drawer then
+        drawer:Hide()
+    end
+end
+
+function ns:IsDrawerShown()
+    return drawer and drawer:IsShown()
 end
 
 -------------------------------------------------------------------------------
 -- Show and hide
 -------------------------------------------------------------------------------
+-- Escape: next to the Group Finder, one press closes the Group Finder and
+-- the window goes with it; on its own, the window is a special frame that
+-- Escape closes.
+local function UpdateEscape()
+    local groupFinder = PVEFrame and PVEFrame:IsShown()
+    for i = #UISpecialFrames, 1, -1 do
+        if UISpecialFrames[i] == "SlotFillerFrame" then table.remove(UISpecialFrames, i) end
+    end
+    if not groupFinder then tinsert(UISpecialFrames, "SlotFillerFrame") end
+end
+
 function ns:ShowWindow(manual)
     BuildFrame()
-    if manual then self.standalone = not (PVEFrame and PVEFrame:IsShown()) end
+    local groupFinder = PVEFrame and PVEFrame:IsShown()
+    if manual then
+        self.standalone = not groupFinder
+        -- opened by hand (the drawer, /sf): stays open until the Group Finder closes
+        if groupFinder then self.userExpanded = true end
+    end
+    UpdateEscape()
+    -- the drawer's push goes first, or the window's would build on it
+    if drawer then drawer:Hide() end
     self:RequestSeasonData()
     self:AnchorWindow()
     frame:SetScript("OnUpdate", OnUpdateWatch)
@@ -471,7 +570,10 @@ end
 
 function ns:HideWindow(manual)
     if manual then self.standalone = false end
-    if frame then frame:Hide() end
+    if not frame then return end
+    frame.autoHide = not manual
+    frame:Hide()
+    frame.autoHide = nil
 end
 
 function ns:ToggleWindow()
@@ -482,28 +584,38 @@ function ns:IsWindowShown()
     return frame and frame:IsShown()
 end
 
-function ns:ShouldAutoShow()
-    if not self.db.autoShow or not (PVEFrame and PVEFrame:IsShown()) then return false end
-    if self.db.onlyPremadeTab then return LFGListFrame and LFGListFrame:IsShown() end
-    return true
+-- Whether the window is open next to the Group Finder now: the setting,
+-- unless the user opened or folded it by hand since the Group Finder opened.
+function ns:AutoExpanded()
+    if not (PVEFrame and PVEFrame:IsShown()) then return false end
+    if self.userExpanded ~= nil then return self.userExpanded end
+    local mode = self.db.autoExpand
+    if mode == "premade" then return (LFGListFrame and LFGListFrame:IsVisible()) and true or false end
+    return mode ~= "never"
 end
 
-local function UpdateAutoVisibility()
-    if not ns.db or ns.userClosedThisSession then return end
-    if ns:ShouldAutoShow() then
-        if not ns:IsWindowShown() then ns:ShowWindow(false) else ns:AnchorWindow() end
-    elseif ns:IsWindowShown() and not ns.standalone then
-        ns:HideWindow(false)
+function ns:UpdateAutoVisibility()
+    if not self.db or not (PVEFrame and PVEFrame:IsShown()) then return end
+    if self:AutoExpanded() then
+        if not self:IsWindowShown() then self:ShowWindow(false) else self:AnchorWindow() end
+    else
+        if self:IsWindowShown() and not self.standalone then self:HideWindow(false) end
+        self:UpdateDrawer()
     end
 end
 
 local function SoonUpdateAutoVisibility()
-    C_Timer.After(0, UpdateAutoVisibility)
+    C_Timer.After(0, function() ns:UpdateAutoVisibility() end)
 end
 
 local function ReanchorSoon()
     C_Timer.After(0, function()
-        if ns:IsWindowShown() and PVEFrame and PVEFrame:IsShown() and ns.db.anchorSide == "left" then ns:AnchorWindow() end
+        if not (PVEFrame and PVEFrame:IsShown()) then return end
+        if ns:IsWindowShown() then
+            if ns.db.anchorSide == "left" then ns:AnchorWindow() end
+        elseif ns:IsDrawerShown() then
+            AnchorDrawer()
+        end
     end)
 end
 
@@ -511,32 +623,33 @@ end
 ns:On("LOGIN", function()
     if PVEFrame then
         PVEFrame:HookScript("OnShow", function()
-            ns.userClosedThisSession = nil
+            ns.userExpanded = nil
+            UpdateEscape()
             SoonUpdateAutoVisibility()
         end)
         PVEFrame:HookScript("OnHide", function()
             if ns:IsWindowShown() and not ns.standalone then ns:HideWindow(false) end
-            ns.userClosedThisSession = nil
+            ns.userExpanded = nil
+            UpdateEscape()
+            ns:UpdateDrawer()
         end)
     end
+    -- the Premade Groups panel comes and goes with the category rail and the
+    -- Group Finder's own tabs; its own shown flag stays set while a parent hides
     if LFGListFrame then
         LFGListFrame:HookScript("OnShow", SoonUpdateAutoVisibility)
         LFGListFrame:HookScript("OnHide", SoonUpdateAutoVisibility)
     end
-    if PVEFrame_ShowFrame then hooksecurefunc("PVEFrame_ShowFrame", SoonUpdateAutoVisibility) end
+    for _, name in ipairs({ "PVEFrame_ShowFrame", "PVEFrame_TabOnClick", "GroupFinderFrame_SelectGroupButton" }) do
+        if _G[name] then hooksecurefunc(name, SoonUpdateAutoVisibility) end
+    end
     if CharacterFrame then
         CharacterFrame:HookScript("OnShow", ReanchorSoon)
         CharacterFrame:HookScript("OnHide", ReanchorSoon)
     end
 end)
 
--- closing with the X while docked: stay closed until the Group Finder is reopened
-ns:On("DB_READY", function()
-    BuildFrame()
-    frame:HookScript("OnHide", function()
-        if PVEFrame and PVEFrame:IsShown() and not ns.standalone then ns.userClosedThisSession = true end
-    end)
-end)
+ns:On("DB_READY", function() BuildFrame() end)
 
 for _, message in ipairs({ "RESULTS_UPDATED", "SETTINGS_CHANGED", "RATING_UPDATED", "SPEC_CHANGED", "GEAR_UPDATED" }) do
     ns:On(message, function() ns:RefreshWindow() end)

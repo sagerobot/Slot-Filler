@@ -1361,6 +1361,50 @@ ns:ShowWindow(false)
 RunTimers()
 check(ns:IsWindowShown(), "window shown")
 check(ns:CurrentPage() == "dungeons", "Dungeons tab first")
+
+-- the drawer: folded away, a tab stands in; the setting says when the window opens by itself
+check(not ns:IsDrawerShown(), "no drawer tab while the window is open")
+ns:HideWindow(true)
+check(not ns:IsWindowShown() and ns:IsDrawerShown() and SlotFillerDrawer:IsShown(), "folded away by hand: the drawer tab shows")
+check(ns.userExpanded == false and not ns:AutoExpanded(), "folded by hand sticks for this Group Finder visit")
+ns:UpdateAutoVisibility()
+check(not ns:IsWindowShown(), "the Always rule does not reopen it")
+SlotFillerDrawer:GetScript("OnClick")(SlotFillerDrawer)
+check(ns:IsWindowShown() and not ns:IsDrawerShown() and ns.userExpanded == true, "the drawer tab opens the window")
+ns.userExpanded = nil
+ns.db.autoExpand = "premade"
+LFGListFrame._shown = false
+ns:UpdateAutoVisibility()
+check(not ns:IsWindowShown() and ns:IsDrawerShown(), "Premade: folded away off the Premade Groups tab")
+LFGListFrame._shown = true
+ns:UpdateAutoVisibility()
+check(ns:IsWindowShown() and not ns:IsDrawerShown(), "Premade: opens on the Premade Groups tab")
+LFGListFrame._shown = false
+ns:UpdateAutoVisibility()
+check(not ns:IsWindowShown(), "Premade: folds away again on leaving it")
+ns.db.autoExpand = "never"
+LFGListFrame._shown = true
+ns:UpdateAutoVisibility()
+check(not ns:IsWindowShown() and ns:IsDrawerShown(), "Never: only the drawer tab")
+ns.db.autoExpand = "always"
+ns:UpdateAutoVisibility()
+check(ns:IsWindowShown() and not ns:IsDrawerShown(), "Always: open again")
+RunTimers()
+-- Escape: next to the Group Finder the window is not a special frame (one
+-- press closes both); on its own it is
+local function IsSpecial()
+    for _, name in ipairs(UISpecialFrames) do if name == "SlotFillerFrame" then return true end end
+    return false
+end
+check(not IsSpecial(), "next to the Group Finder, Escape is left to the Group Finder")
+PVEFrame:GetScript("OnHide")(PVEFrame)
+PVEFrame._shown = false
+ns:ShowWindow(true)
+check(IsSpecial(), "on its own, Escape closes the window")
+PVEFrame._shown = true
+PVEFrame:GetScript("OnShow")(PVEFrame)
+check(not IsSpecial(), "back next to the Group Finder, Escape is its again")
+RunTimers()
 local wb = SlotFillerFrame.Toolbar.WeightsButton
 check(wb and wb.Text:GetText():find("none", 1, true) ~= nil, "toolbar shows that no weight profile is in use")
 wb:GetScript("OnClick")(wb)

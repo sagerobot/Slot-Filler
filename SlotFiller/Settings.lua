@@ -278,8 +278,20 @@ function ns:BuildSettingsPage(page)
         ns:AnchorWindow()
     end
     panel.followCheck = follow
-    AddCheck("Open with the Group Finder", "Show automatically whenever the Dungeons & Raids window opens.", "autoShow")
-    AddCheck("Only on the Premade Groups tab", "Only auto-show while the Premade Groups tab is active.", "onlyPremadeTab")
+    -- The drawer tab stands in for the window whenever it is folded away;
+    -- this is when the window opens by itself.
+    local openRow = Row(26)
+    RowLabel(openRow, "Opens by itself")
+    panel.OpenTabs = Switch(openRow, {
+        { "always", "Always", "Open whenever the Dungeons & Raids window opens." },
+        { "premade", "Premade", "Opens when you go to the Premade Groups tab and folds away when you leave it." },
+        { "never", "Never", "Stays folded away until you click the drawer tab." },
+    }, 62, function(mode)
+        ns.db.autoExpand = mode
+        ns.userExpanded = nil -- the rule applies from the next tab change
+        ns:Fire("SETTINGS_CHANGED")
+    end)
+    Hint("A thin drawer tab sits on the Dungeons & Raids window while this one is folded away: click it to open the window, its X to fold it back.", 30)
     AddCheck("Push the Group Finder right when needed",
         "If there is no room on the left of the screen, move the Group Finder right to make space. It moves back when this window closes.",
         "pushGroupFinder")
@@ -370,6 +382,7 @@ function ns:RefreshSettings()
     for _, cb in ipairs(panel.controls) do cb:SetChecked(cb.get() and true or false) end
     local side = self.db.anchorSide
     if panel.DockTabs.selectedTabID ~= side then Style.SelectTab(panel.DockTabs, side) end
+    if panel.OpenTabs.selectedTabID ~= self.db.autoExpand then Style.SelectTab(panel.OpenTabs, self.db.autoExpand) end
     panel.followCheck:SetEnabled(side == "free")
     panel.followCheck:SetAlpha(side == "free" and 1 or 0.4)
     panel.followCheck.Label:SetAlpha(side == "free" and 1 or 0.4)
